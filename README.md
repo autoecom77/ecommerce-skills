@@ -25,3 +25,9 @@ Competitor advertising creative ingestion and transformation:
 High-resolution media harvesting from ecommerce product pages:
 - Deterministic extraction of product hero images, gallery assets, and variant photos.
 - Produces clean structured JSON manifests for Shopify import and creative pipelines.
+
+### 5. `vozo-translate-dub`
+Automated video localization, multilingual voice dubbing, and subtitle replacement:
+- Uses the official Vozo Translate & Dub REST API (`POST /v1/media/translate`).
+- Default configured for the French dropshipping market: auto source language, French target, auto voice cloning, auto speakers, original subtitle erasure + replacement, and automated video speed/audio alignment.
+- Includes Python helper script `vozo_translate.py` and CLI subcommands (`run`, `submit`, `status`, `wait`).
