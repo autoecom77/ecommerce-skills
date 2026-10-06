@@ -66,6 +66,27 @@ ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p
 
 Expected: exactly 2× the input's width and height.
 
+### 5. Localize for the French Market (Vozo Translate & Dub)
+
+When the repurposed creative must be adapted for the French dropshipping market, run the standardized Vozo localization pipeline immediately:
+
+```bash
+vozo-cli project translate_dub create \
+  --from-file out.mp4 \
+  --target-language fr \
+  --original-language auto \
+  --dub-preference auto \
+  --speaker-number Auto \
+  --enable-subtitles \
+  --remove-original-subtitle \
+  --auto-align-video
+```
+
+Then download the resulting dubbed video:
+```bash
+vozo-cli project translate_dub download <project_id> --artifact dubbed_video --output ./localized_ads/
+```
+
 ## Pitfalls
 
 - **`scale=iw*2:iw*2` squares the frame.** Both dimensions read `iw`, so a

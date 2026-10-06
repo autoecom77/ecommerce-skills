@@ -28,6 +28,24 @@ High-resolution media harvesting from ecommerce product pages:
 
 ### 5. `vozo-translate-dub`
 Automated video localization, multilingual voice dubbing, and subtitle replacement:
-- Uses the official Vozo Translate & Dub REST API (`POST /v1/media/translate`).
-- Default configured for the French dropshipping market: auto source language, French target, auto voice cloning, auto speakers, original subtitle erasure + replacement, and automated video speed/audio alignment.
-- Includes Python helper script `vozo_translate.py` and CLI subcommands (`run`, `submit`, `status`, `wait`).
+- Uses the official `vozo-cli` tool (v1.0.3) and Vozo REST API with authenticated account `autoecom77@gmail.com`.
+- **Enforced defaults for French dropshipping market**:
+  - Source language: `auto`
+  - Target language: `fr`
+  - Voice cloning: `auto`
+  - Diarization: `Auto` (speakers detected automatically)
+  - Subtitles: `--enable-subtitles --remove-original-subtitle` (erases burnt-in original subtitles, adds French subtitles)
+  - Timing: `--auto-align-video` (synchronizes video speed segment-by-segment with audio dubbing)
+- **Autonomous agent command**:
+  ```bash
+  vozo-cli project translate_dub create \
+    --from-file "/path/to/video.mp4" \
+    --target-language fr \
+    --original-language auto \
+    --dub-preference auto \
+    --speaker-number Auto \
+    --enable-subtitles \
+    --remove-original-subtitle \
+    --auto-align-video
+  ```
+- Includes standalone Python helper `vozo_translate.py` for direct REST API scripting and automated download pipelines.
