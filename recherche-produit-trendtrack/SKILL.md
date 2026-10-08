@@ -6,7 +6,7 @@ version: 2.2.0
 
 # Recherche Produit TrendTrack
 
-Workflow automatisé de recherche produit dropshipping EU. Tourne en cron tous les 2 jours à 9h00 Paris (7h00 UTC). Ajoute au Google Sheet « Tableau de Recherche Produit » tous les produits qui passent les filtres, classés par potentiel et par niche. Trigger : cron tous-les-2-jours, « recherche produit », « trouve des produits ».
+Workflow automatisé de recherche produit dropshipping EU. Tourne en cron tous les 3 jours à 9h00 Paris (7h00 UTC, `0 7 */3 * *`). Ajoute au Google Sheet « Tableau de Recherche Produit » tous les produits qui passent les filtres, classés par potentiel et par niche. Trigger : cron tous-les-3-jours, « recherche produit », « trouve des produits ».
 
 ## Accès
 
