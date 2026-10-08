@@ -22,6 +22,7 @@ Workflow automatisé de recherche produit dropshipping EU. Tourne en cron tous l
   - `pre_filter.py` — pré-filtrage programmatique (dédup domaine vs Sheet)
   - `cogs_image_search.py` — recherche COGS par image (Apify 1688 + fallback AliExpress)
   - `aliexpress_image_search.py` — recherche par image AliExpress (Scrapling, utilisé comme fallback par cogs_image_search.py)
+  - `enrich_api.py` — enrichissement programmatique par produit via l'API REST (recherche ads par domaine ; remplace le workflow MCP search_ads + find_similar_shops depuis 2026-10-09)
 
 ## Étape 0 — Pré-checks (obligatoires)
 
@@ -126,14 +127,29 @@ Recalculer X avec le COGS réel ; si X passe sous le seuil de l'étape 2 → ret
 
 Cap à 100. **Priorité** : Score ≥ 70 → `1 Urgent` ; 50–69 → `2 Important` ; < 50 → `3 Normal`.
 
-## Étape 5 — Enrichissement par produit
+## Étape 5 — Enrichissement par produit (programmatique, script `enrich_api.py`)
 
-- **Colonne « Ads » + blocs AD** : `search_ads(query="<domaine>", search_in="domain", status="active", limit=20, sort_by="reach", order="desc")` (30 crédits/produit) → « Ads » = nombre de résultats (plafonné : écrire « 20 »), top ads par reach → AD1–AD8. **URL ad = `trendtrack_url`** du résultat (lien direct vers la page TrendTrack de l'ad).
-- **Concurrents** : `mcp__trendtrack__find_similar_shops(shop="<domaine>", limit=5)` (24 crédits) → les 2 premiers qui passent :
-  - PAS marketplace (amazon, ebay, walmart, etsy, shein, temu, tiktokshop)
-  - PAS méga-marque (traffic > 1M visites/mois ou FB likes > 1M ; ex. L'Oréal, Sephora, Douglas, Myprotein)
-  - Format cellule : `nom (domaine) — Xk visites/mois, N ads`
-  - Si les 5 sont tous des méga-marques : écrire « Aucun DNVB éligible — <noms> (méga-marques) ».
+**2026-10-09 : l'enrichissement est un script via l'API REST publique (comme `query_ads_api.py`) — plus aucun appel MCP. L'enrichissement « Concurrents » (find_similar_shops) est supprimé à la demande utilisateur : colonnes BV/BW restent vides.**
+
+Pour chaque produit retenu :
+
+```bash
+cd ~/.hermes/skills/ecommerce/recherche-produit-trendtrack
+python3 scripts/enrich_api.py \
+  --candidates /tmp/tt_candidates_kept.json \
+  > /tmp/tt_enriched.json
+# test sur un seul shop : python3 scripts/enrich_api.py --shop <domaine>
+```
+
+Le script appelle `POST /v1/ads/query` avec `{search: "<domaine>", searchType: "domain", status: "active", limit: 20, sortBy: "reach", order: "desc"}` (≤ 5 crédits/shop actuellement — coût mesuré 5 crédits sur luveon.com et belle-body.de, ~10× moins cher que le MCP search_ads) et retourne par candidat :
+
+- `ads_count` — nombre d'ads actives trouvées (page 1 : 20 par page, total dans `pagination.total`) → écrire ce nombre dans la colonne « Ads » (F), plafonné à l'affichage voulu (p.ex. « 20 »).
+- `ads[]` triées par reach desc : `trendtrack_url`, `reach`, `first_seen`, `last_seen`, `media_url`, `landing_url`, `body`.
+
+NOTES API (découvertes 2026-10-09) :
+- La recherche par domaine utilise `search` + `searchType: "domain"` (l'ancienne forme `query`/`searchIn` renvoie des résultats non filtrés).
+- Le renvoi est paginé (20 par page, `pagination.total` peut être large) : on prend la page 1 (top 20 ads par reach), pas besoin de plus.
+- `trendtrack_url` = lien TrendTrack fonctionnel : `https://app.trendtrack.io/en/ju-2/explorer?tab=ads&ad=<ad_id>&adSource=meta` (ad_id AVEC préfixe `facebook_`). ⚠️ 2026-10-09 : l'ancien format `https://app.trendtrack.io/ads/<id>` (sans workspace/explorer params) renvoie une 404 dans l'app — ne plus l'utiliser. Le lien `&ad=` ouvre le drawer détail de l'ad dans l'explorer.
 
 ## Étape 6 — Écriture dans le Sheet (JAMAIS modifier les lignes existantes)
 
@@ -141,12 +157,12 @@ Ligne de 75 colonnes :
 ```
 [FALSE, Nom, URL, Pays, Niche, Ads, Priorité, "", COGS, Prix, X,
  AD1_url, AD1_imp, AD1_date1, AD1_date2, … AD8 max (blocs de 4),
- …, Commentaire, Score, Conc1, Conc2]
+ …, Commentaire, Score]
 ```
 - Colonnes 12–71 : blocs AD1..AD15 (url, impressions/spend, date 1, date 2) — remplir 8 ads max, le reste vide.
 - Dates format `Mmm YY` (ex. `Sep 26`) **en texte forcé** : préfixer d'une apostrophe (`'Dec 25`), sinon Sheets convertit en vraie date avec l'année en cours (piège constaté). Date 1 = première vue, date 2 = dernière vue (si inconnue : mois en cours, l'ad est active).
 - Impressions/spend format bucket : `10 M +`, `7 - 10 M`, `3 - 7 M`, `1 - 3 M`, `< 1 M`.
-- URL ad : `trendtrack_url` du résultat `search_ads` (lien dashboard TrendTrack).
+- URL ad : `trendtrack_url` de `enrich_api.py` = `https://app.trendtrack.io/ads/<id>` (lien dashboard TrendTrack, choisi de préférence au lien Facebook Ad Library natif).
 - Lignes classées par Priorité croissante puis par niche.
 - **NE PAS utiliser `sheets append`** : la plage « utilisée » du Sheet s'étend à ~966 lignes (formatage historique), `values.append` écrirait en bas de la grille (ligne 967+). Trouver la dernière ligne L avec une valeur en colonne B (`sheets get <SHEET_ID> 'Products'!B1:B2000`), puis écrire à position exacte :
   ```bash
@@ -163,7 +179,7 @@ Résumé : produits examinés / retenus / ajoutés, crédits consommés (check_c
 
 ## Règles opérationnelles
 
-- Crédits limités (10k/période, reset le 21, ~15 runs/mois) : moyenne cible ≤ 650 crédits/run, plafond dur 1 200. Coûts mesurés : `search_ads`=30, `find_similar_shops`=24, `check_credits`=0 → 90 + 54×N crédits pour N produits enrichis (5 ≈ 360, 10 ≈ 630). Enrichir par Score décroissant ; si le plafond est atteint avant la fin de la liste, arrêter proprement et noter les produits non traités dans l'email de récap. Mesurer avant/après et mettre la conso dans le récap ; < 500 restants → skip le run.
+- Crédits limités (10k/période, reset le 21, ~15 runs/mois) : moyenne cible ≤ 650 crédits/run, plafond dur 1 200. Coûts mesurés : `search_ads` REST ≈ 5 crédits/domaine enrichi (2026-10-09), `check_credits`=0 → 90 + 5×N crédits pour N produits enrichis (5 ≈ 115, 10 ≈ 140). Enrichir par Score décroissant ; si le plafond est atteint avant la fin de la liste, arrêter proprement et noter les produits non traités dans l'email de récap. Mesurer avant/après et mettre la conso dans le récap ; < 500 restants → skip le run.
 - Colonnes `Validation / Lancement` et `Kalodata` restent vides (remplissage manuel).
 - Si le MCP trendtrack échoue (OAuth expiré) : email d'alerte court, AUCUN ajout au Sheet.
 - Trendtrack en lecture uniquement (jamais brandtracker/favorites en écriture).
