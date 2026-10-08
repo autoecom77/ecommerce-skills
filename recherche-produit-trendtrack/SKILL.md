@@ -45,7 +45,7 @@ python3 scripts/query_ads_api.py --date $(date +%F) > /tmp/tt_candidates_raw.jso
 # Mode test 1 méthode : --method 1|2|3 (≈ 30 crédits)
 ```
 
-Le script retourne un tableau JSON de candidats (~20–50 après dédup). Coût fixe : 90 crédits (3 × 30 crédits).
+Le script retourne un tableau JSON de candidats (~50–120 après dédup avec la limite par défaut de 100 par requête). Coût fixe : 90 crédits (3 × 30 crédits).
 
 ## Étape 1.5 — Déduplication Sheet (`pre_filter.py`)
 

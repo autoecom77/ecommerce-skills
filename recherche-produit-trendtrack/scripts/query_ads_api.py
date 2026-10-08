@@ -8,8 +8,9 @@ Merges results, deduplicates by shop domain, and outputs a clean JSON
 array to stdout (same normalized shape as query_ads.py).
 
 Usage:
-    python3 query_ads_api.py --date 2026-10-08            # all 3 methods
+    python3 query_ads_api.py --date 2026-10-08            # all 3 methods (limit 100)
     python3 query_ads_api.py --date 2026-10-08 --method 1 # method 1 only (test mode)
+    python3 query_ads_api.py --limit 20                  # custom limit (default: 100)
 
 API key: read from ~/.hermes/mcp-tokens/trendtrack_rest_key.txt
 (one-time key created from the dashboard Settings → API; never print it).
@@ -100,7 +101,7 @@ def api_query(payload: Dict[str, Any], api_key: str, retries: int = 3) -> Dict[s
 # ---------------------------------------------------------------------------
 # Query definitions — VERBATIM user spec (public camelCase contract)
 # ---------------------------------------------------------------------------
-def build_queries(ref_date: datetime) -> List[Dict[str, Any]]:
+def build_queries(ref_date: datetime, limit: int = 100) -> List[Dict[str, Any]]:
     j = ref_date.strftime("%Y-%m-%d")
     j_90 = (ref_date - timedelta(days=90)).strftime("%Y-%m-%d")
     j_30 = (ref_date - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -132,7 +133,7 @@ def build_queries(ref_date: datetime) -> List[Dict[str, Any]]:
         # ads-search ») → équivalent le plus proche : reachDelta7d desc.
         "sortBy": "reachDelta7d",
         "order": "desc",
-        "limit": 20,
+        "limit": limit,
     }
 
     method2 = {
@@ -152,7 +153,7 @@ def build_queries(ref_date: datetime) -> List[Dict[str, Any]]:
         # Sort by Ads rank descendant
         "sortBy": "adOrder",
         "order": "desc",
-        "limit": 20,
+        "limit": limit,
     }
 
     method3 = {
@@ -168,7 +169,7 @@ def build_queries(ref_date: datetime) -> List[Dict[str, Any]]:
         "minActiveAds": 50,
         "adsTimePeriod": "last24h",
         "status": "active",
-        "limit": 20,
+        "limit": limit,
     }
 
     return [method1, method2, method3]
@@ -257,12 +258,14 @@ def main():
                         help="Reference date YYYY-MM-DD (default: today).")
     parser.add_argument("--method", "-m", type=int, choices=[1, 2, 3], default=None,
                         help="Run only this method (1, 2 or 3) — for cheap test runs.")
+    parser.add_argument("--limit", "-l", type=int, default=100,
+                        help="Max ads per method query (default: 100, API max).")
     args = parser.parse_args()
 
     ref_date = datetime.strptime(args.date, "%Y-%m-%d")
     api_key = load_api_key()
 
-    queries = build_queries(ref_date)
+    queries = build_queries(ref_date, limit=args.limit)
     if args.method:
         queries = [q for q in queries if q["_tag"] in {
             1: "shopify_reach_growth", 2: "native_ads", 3: "volume_live"}[args.method]]
