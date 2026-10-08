@@ -18,7 +18,7 @@ Workflow automatisé de recherche produit dropshipping EU. Tourne en cron tous l
   ```
   `sheets get` (lecture), `sheets update` (écriture à position exacte), `gmail send` (récap).
 - **Scripts helper** (dans `~/.hermes/skills/ecommerce/recherche-produit-trendtrack/scripts/`) :
-  - `query_ads_api.py` — batch des 3 méthodes de recherche TrendTrack via l'API REST
+  - `query_ads_api.py` — batch des 2 méthodes de recherche TrendTrack sur 5 pages via l'API REST
   - `pre_filter.py` — déduplication domaine contre les boutiques déjà présentes dans le Sheet
   - `price_filter.py` — filtrage mathématique déterministe (prix < 30€, near-miss 29.90–29.99€, coefficient X > 4 si 30–40€, X ≥ 3.5 si > 40€)
   - `cogs_image_search.py` — recherche COGS par image (Apify 1688 + fallback AliExpress Scrapling)
@@ -28,7 +28,7 @@ Workflow automatisé de recherche produit dropshipping EU. Tourne en cron tous l
 ## Étape 0 — Pré-checks
 
 1. Date du jour : `date +%F` (notée J, sert aux filtres de dates).
-2. Vérification crédits : lire le solde TrendTrack (`POST https://api.trendtrack.io/v1/credits`). Si remaining < 500 : STOP et email d'alerte « crédits TrendTrack faibles (N restants) » à autoecom77@gmail.com.
+2. Vérification crédits : lire le solde TrendTrack (`GET https://api.trendtrack.io/v1/usage`). Si remaining < 300 : STOP et email d'alerte « crédits TrendTrack faibles (N restants) » à autoecom77@gmail.com.
 3. Extraction des URLs existantes pour dédoublonnage :
    ```bash
    $GAPI sheets get 1dpjf3fYBPG8eXgsbRnpi3QLdHdPwQB40W86Yz3pVPEM 'Products!B2:C2000' \
@@ -37,15 +37,16 @@ Workflow automatisé de recherche produit dropshipping EU. Tourne en cron tous l
 
 ## Étape 1 — Recherche batch (`query_ads_api.py`)
 
-Lancer le script qui exécute les 3 méthodes de recherche en une seule passe via l'API REST publique (Shopify reach growth, native ads, volume d'ads live), fusionne et déduplique par domaine :
+Lancer le script qui exécute les 2 méthodes de recherche (Shopify reach growth, volume d'ads live) sur 5 pages via l'API REST publique, fusionne et déduplique par domaine :
 
 ```bash
 cd ~/.hermes/skills/ecommerce/recherche-produit-trendtrack
 python3 scripts/query_ads_api.py --date $(date +%F) > /tmp/tt_candidates_raw.json
-# Mode test 1 méthode : --method 1|2|3 (≈ 30 crédits)
+# Mode test 1 méthode : --method 1|2 (≈ 30 crédits/page, ex. --method 1 --pages 1)
+# Personnaliser le nombre de pages : --pages <N> (défaut : 5)
 ```
 
-Le script retourne un tableau JSON de candidats (~50–120 après dédup avec la limite par défaut de 100 par requête). Coût fixe : 90 crédits (3 × 30 crédits).
+Le script interroge par défaut 5 pages par méthode (100 ads/page). Coût recherche : 300 crédits fixes (2 méthodes × 5 pages × 30 crédits).
 
 ## Étape 1.5 — Déduplication Sheet (`pre_filter.py`)
 
@@ -168,13 +169,13 @@ $GAPI gmail send --to autoecom77@gmail.com --subject "Recherche produit TrendTra
 ```
 Résumé à inclure :
 - Nombre de produits examinés / retenus / ajoutés.
-- Crédits consommés (recherche 90 + ~5 crédits par boutique enrichie).
+- Crédits consommés (recherche 300 + ~5 crédits par boutique enrichie).
 - Produits quasi-miss (29,90–29,99 €) capturés depuis `/tmp/tt_near_misses.json`.
 - Top 3 des produits ajoutés (nom, prix, X, score, priorité).
 - Lien direct vers le Sheet : https://docs.google.com/spreadsheets/d/1dpjf3fYBPG8eXgsbRnpi3QLdHdPwQB40W86Yz3pVPEM/edit?gid=815136391
 
 ## Règles opérationnelles
 
-- Crédits : cible moyenne ≤ 650 crédits/run, plafond dur 1 200. Coûts : 90 crédits (recherche initiale) + ~5 crédits par boutique enrichie. Si le solde restant est < 500 crédits au départ, annuler le run et envoyer un email d'alerte.
+- Crédits : cible moyenne ≤ 650 crédits/run, plafond dur 1 200. Coûts : 300 crédits (recherche initiale : 2 méthodes × 5 pages × 30 crédits) + ~5 crédits par boutique enrichie. Si le solde restant est < 300 crédits au départ, annuler le run et envoyer un email d'alerte.
 - Colonnes `Validation / Lancement` et `Kalodata` restent vides (remplissage manuel ultérieur).
 - Colonnes `Concurrent 1` et `Concurrent 2` restent vides.

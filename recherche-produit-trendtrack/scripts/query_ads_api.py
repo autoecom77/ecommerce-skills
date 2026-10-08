@@ -3,43 +3,37 @@
 query_ads_api.py — Batch TrendTrack Ad Search via the PUBLIC REST API.
 
 Calls POST https://api.trendtrack.io/v1/ads/query directly (deterministic,
-no MCP layer), running the 3 user-specified search methods verbatim.
+no MCP layer), running the 2 user-specified search methods across multiple pages.
 Merges results, deduplicates by shop domain, and outputs a clean JSON
 array to stdout (same normalized shape as query_ads.py).
 
 Usage:
-    python3 query_ads_api.py --date 2026-10-08            # all 3 methods (limit 100)
+    python3 query_ads_api.py --date 2026-10-08            # 2 methods, 5 pages each (limit 100/page)
+    python3 query_ads_api.py --date 2026-10-08 --pages 2  # custom page count (2 pages/method)
     python3 query_ads_api.py --date 2026-10-08 --method 1 # method 1 only (test mode)
-    python3 query_ads_api.py --limit 20                  # custom limit (default: 100)
+    python3 query_ads_api.py --limit 50                   # custom limit per page (default: 100)
 
 API key: read from ~/.hermes/mcp-tokens/trendtrack_rest_key.txt
 (one-time key created from the dashboard Settings → API; never print it).
 
-Cost: ~30 credits per method (same backend as search_ads MCP).
+Cost:
+    ~30 credits per query call.
+    Default (5 pages × 2 methods = 10 calls): ~300 credits for search.
 
-Methods (verbatim from user spec, 2026-10-08):
+Methods (user spec, 2026-10-08):
 
   Méthode 1 — shopify_reach_growth:
     - created: today - 3 months .. today
     - technologies: shopify
     - countries: FR, DE, NL
     - languages: fr, de, nl
-    - reach: min 36k, max 10M (total)
-    - reach growth: >= 135% (last30d — public API accepts last30d, unlike MCP)
+    - reach: min 36k, no upper cap (covers 10M+)
+    - reach growth: >= 135% (last7d backend window)
     - status: active
-    - sortBy: reachDelta30d desc
+    - sortBy: reachDelta7d desc
 
-  Méthode 2 — native_ads:
-    - status: active
-    - minDaysRunning: 20
-    - mediaType: image
-    - countries: FR, DE, NL
-    - languages: fr, de, nl
-    - adCopyLength min 1000 (minDescriptionLength)
-    - sortBy: adOrder desc (= "Ads rank" descendant)
-
-  Méthode 3 — volume_live:
-    - exclude countries: IN, PK, US (public API accepts exclude, unlike MCP)
+  Méthode 2 — volume_live:
+    - exclude countries: IN, PK, US
     - createdAfter: today - 30 days
     - minActiveAds: 50, adsTimePeriod: last24h
     - status: active
@@ -59,8 +53,11 @@ from pathlib import Path
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 REST_KEY_PATH = HERMES_HOME / "mcp-tokens" / "trendtrack_rest_key.txt"
 ADS_QUERY_URL = "https://api.trendtrack.io/v1/ads/query"
-# OAuth token (fallback auth + refresh source for nothing here; REST key is primary)
+USAGE_URL = "https://api.trendtrack.io/v1/usage"
 TOKEN_PATH = HERMES_HOME / "mcp-tokens" / "trendtrack.json"
+
+DEFAULT_PAGES = 5
+MIN_CREDITS_THRESHOLD = 300
 
 
 def load_api_key() -> str:
@@ -68,6 +65,35 @@ def load_api_key() -> str:
         return REST_KEY_PATH.read_text().strip()
     raise SystemExit(f"API key not found at {REST_KEY_PATH}. Create it from the "
                      "TrendTrack dashboard Settings → API → Create key.")
+
+
+def check_credits(api_key: str, min_credits: int = MIN_CREDITS_THRESHOLD) -> int:
+    """Check remaining TrendTrack credits. Aborts if below min_credits."""
+    req = urllib.request.Request(
+        USAGE_URL,
+        headers={"Authorization": f"Bearer {api_key}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode())
+            credits_info = data.get("credits") or {}
+            quota = data.get("includedQuota") or {}
+            remaining = credits_info.get("totalRemaining")
+            if remaining is None:
+                remaining = quota.get("remaining", 0)
+            print(f"[query_ads_api] TrendTrack balance: {remaining} credits remaining", file=sys.stderr)
+            if remaining < min_credits:
+                raise SystemExit(
+                    f"[query_ads_api] ERROR: Low TrendTrack credits ({remaining} < {min_credits}). "
+                    f"Aborting run to protect credit budget."
+                )
+            return int(remaining)
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"[query_ads_api] Warning: could not check credits balance ({e}), proceeding...", file=sys.stderr)
+        return -1
 
 
 def api_query(payload: Dict[str, Any], api_key: str, retries: int = 3) -> Dict[str, Any]:
@@ -116,53 +142,25 @@ def build_queries(ref_date: datetime, limit: int = 100) -> List[Dict[str, Any]]:
         # Pays: France Allemagne Pays-bas
         "adCountries": {"include": ["FR", "DE", "NL"]},
         # Langue: Français Allemand Néerlandais
-        "adLanguages": ["fr", "de", "nl"],
-        # Reach au moins 36k à 10M+
+        "adLanguage": ["fr", "de", "nl"],
+        # Reach au moins 36k à 10M+ (sans cap supérieur pour inclure les gagnants > 10M)
         "minReach": 36000,
-        "maxReach": 10000000,
         "reachPeriod": "total",
         # Évolution du reach: 135% à 1000%+
-        # NOTE: le contrat public exige {anyOf:[{all:[{operator, value, period}]}]}
-        # et le backend ne supporte que period=last7d (last30d rejeté
-        # « not representable; use last7d » — limite serveur, 2026-10-08).
+        # Backend supporte period=last7d
         "adReachGrowth": {"anyOf": [{"all": [{"operator": "gte", "value": 135, "period": "last7d"}]}]},
         # Pubs actives
         "status": "active",
         # Sort by évolution du reach
-        # NOTE: sortBy=reachDelta30d rejeté par le backend (« not representable on
-        # ads-search ») → équivalent le plus proche : reachDelta7d desc.
         "sortBy": "reachDelta7d",
         "order": "desc",
         "limit": limit,
     }
 
     method2 = {
-        "_tag": "native_ads",
-        # Pubs actives
-        "status": "active",
-        # Days running minimum 20
-        "minDaysRunning": 20,
-        # Media type: Image
-        "mediaType": "image",
-        # Pays: France Allemagne Pays-bas
-        "adCountries": {"include": ["FR", "DE", "NL"]},
-        # Langue: Français Allemand Néerlandais
-        "adLanguages": ["fr", "de", "nl"],
-        # Ads copy length 1000 minimum
-        "minDescriptionLength": 1000,
-        # Sort by Ads rank descendant
-        "sortBy": "adOrder",
-        "order": "desc",
-        "limit": limit,
-    }
-
-    method3 = {
         "_tag": "volume_live",
         # Exclure les pays: Inde, Pakistan, US
-        # NOTE: adCountries.exclude est rejeté par le backend (« not representable
-        # on ads-search »). Équivalent supporté le plus proche (2026-10-08) :
-        # exclure les shops originaires d'IN/PK/US via shopCreationCountries.exclude.
-        "shopCreationCountries": {"exclude": ["IN", "PK", "US"]},
+        "creationCountry": {"exclude": ["IN", "PK", "US"]},
         # Last 30 days
         "createdAfter": j_30,
         # Live ads: 50 ads last 24 hours
@@ -172,7 +170,7 @@ def build_queries(ref_date: datetime, limit: int = 100) -> List[Dict[str, Any]]:
         "limit": limit,
     }
 
-    return [method1, method2, method3]
+    return [method1, method2]
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +214,17 @@ def extract_ad_fields(ad: Dict[str, Any], method_tag: str) -> Optional[Dict[str,
     metrics = ad.get("metrics") or {}
     media = ad.get("media") or {}
     audience = ad.get("audience") or {}
+
+    # Client-side safeguard for Method 2: exclude IN, PK, US
+    if method_tag == "volume_live":
+        targeted = [c.upper() for c in (audience.get("targetedCountries") or [])]
+        main_c = (audience.get("mainCountry") or "").upper()
+        creation_c = (advertiser.get("creationCountry") or "").upper()
+        if creation_c in {"IN", "PK", "US"} or main_c in {"IN", "PK", "US"}:
+            return None
+        if targeted and all(c in {"IN", "PK", "US"} for c in targeted):
+            return None
+
     landing_url = content.get("landingPageUrl") or ""
     shop_domain = content.get("landingPageDomain") or normalize_domain(landing_url)
     body = content.get("body") or ""
@@ -252,41 +261,85 @@ def extract_ad_fields(ad: Dict[str, Any], method_tag: str) -> Optional[Dict[str,
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Batch TrendTrack ad search via public REST API — 3 methods verbatim."
+        description="Batch TrendTrack ad search via public REST API — 2 methods across multiple pages."
     )
     parser.add_argument("--date", "-d", default=datetime.now().strftime("%Y-%m-%d"),
                         help="Reference date YYYY-MM-DD (default: today).")
-    parser.add_argument("--method", "-m", type=int, choices=[1, 2, 3], default=None,
-                        help="Run only this method (1, 2 or 3) — for cheap test runs.")
+    parser.add_argument("--pages", "-p", type=int, default=DEFAULT_PAGES,
+                        help=f"Number of pages to search per method (default: {DEFAULT_PAGES}).")
+    parser.add_argument("--method", "-m", type=int, choices=[1, 2], default=None,
+                        help="Run only this method (1 or 2) — for cheap test runs.")
     parser.add_argument("--limit", "-l", type=int, default=100,
                         help="Max ads per method query (default: 100, API max).")
+    parser.add_argument("--min-credits", type=int, default=MIN_CREDITS_THRESHOLD,
+                        help=f"Minimum credits threshold required before searching (default: {MIN_CREDITS_THRESHOLD}).")
+    parser.add_argument("--skip-credit-check", action="store_true",
+                        help="Skip pre-run TrendTrack credit balance verification.")
     args = parser.parse_args()
 
     ref_date = datetime.strptime(args.date, "%Y-%m-%d")
     api_key = load_api_key()
 
+    # Pre-check credit balance before executing queries
+    if not args.skip_credit_check:
+        check_credits(api_key, min_credits=args.min_credits)
+
     queries = build_queries(ref_date, limit=args.limit)
     if args.method:
         queries = [q for q in queries if q["_tag"] in {
-            1: "shopify_reach_growth", 2: "native_ads", 3: "volume_live"}[args.method]]
+            1: "shopify_reach_growth", 2: "volume_live"}[args.method]]
+
+    estimated_credits = len(queries) * args.pages * 30
+    print(f"[query_ads_api] Starting search: {len(queries)} method(s), up to {args.pages} page(s) each "
+          f"(estimated search cost: ~{estimated_credits} credits)", file=sys.stderr)
 
     all_ads: List[Dict[str, Any]] = []
-    for query in queries:
-        method_tag = query.pop("_tag")
-        print(f"[query_ads_api] Running method: {method_tag}...", file=sys.stderr)
-        try:
-            resp = api_query(query, api_key)
-            raw_ads = resp.get("data") or []
-            print(f"[query_ads_api]   → {len(raw_ads)} raw results "
-                  f"(total {resp.get('pagination', {}).get('total', '?')})", file=sys.stderr)
-            for raw_ad in raw_ads:
-                parsed = extract_ad_fields(raw_ad, method_tag)
-                if parsed and parsed["shop_domain"]:
-                    all_ads.append(parsed)
-        except Exception as e:
-            print(f"[query_ads_api] ERROR in {method_tag}: {e}", file=sys.stderr)
 
-    print(f"[query_ads_api] Total raw results: {len(all_ads)}", file=sys.stderr)
+    for query_template in queries:
+        method_tag = query_template.pop("_tag")
+        print(f"[query_ads_api] Running method: {method_tag} (up to {args.pages} pages)...", file=sys.stderr)
+
+        for page_num in range(1, args.pages + 1):
+            query = dict(query_template)
+            query["page"] = page_num
+            print(f"[query_ads_api]   Fetching {method_tag} page {page_num}/{args.pages}...", file=sys.stderr)
+
+            try:
+                resp = api_query(query, api_key)
+                raw_ads = resp.get("data") or []
+                pagination = resp.get("pagination") or {}
+                total_items = pagination.get("total", "?")
+                total_pages = pagination.get("totalPages")
+
+                page_matched = 0
+                for raw_ad in raw_ads:
+                    parsed = extract_ad_fields(raw_ad, method_tag)
+                    if parsed and parsed["shop_domain"]:
+                        all_ads.append(parsed)
+                        page_matched += 1
+
+                print(f"[query_ads_api]     → page {page_num}: {len(raw_ads)} ads received, "
+                      f"{page_matched} valid shops (total matching: {total_items}, totalPages: {total_pages})",
+                      file=sys.stderr)
+
+                # Stop early if no results or reached totalPages
+                if not raw_ads:
+                    print(f"[query_ads_api]     → No more ads on page {page_num}, stopping pagination for {method_tag}.",
+                          file=sys.stderr)
+                    break
+                if total_pages is not None and page_num >= total_pages:
+                    print(f"[query_ads_api]     → Reached last page ({page_num}/{total_pages}) for {method_tag}.",
+                          file=sys.stderr)
+                    break
+
+                if page_num < args.pages:
+                    time.sleep(0.5)
+
+            except Exception as e:
+                print(f"[query_ads_api] ERROR in {method_tag} page {page_num}: {e}", file=sys.stderr)
+                break
+
+    print(f"[query_ads_api] Total raw collected candidates: {len(all_ads)}", file=sys.stderr)
 
     # Dedup by shop domain — keep highest reach entry, merge method tags
     seen: Dict[str, Dict[str, Any]] = {}

@@ -6,7 +6,7 @@ A collection of autonomous agent skills and automated workflows for ecommerce an
 
 ### 1. `recherche-produit-trendtrack`
 Automated dropshipping product research workflow in the European market:
-- Scans TrendTrack ads (Shopify reach growth, native ads, live ad volume).
+- Scans TrendTrack ads across 5 pages (Shopify reach growth, live ad volume).
 - De-duplicates domains against existing Google Sheets.
 - Computes COGS via reverse image search (1688 and AliExpress fallback).
 - Updates Google Sheet with scoring and competitor data.
