@@ -18,7 +18,7 @@ Workflow automatisé de recherche produit dropshipping EU. Tourne en cron tous l
   ```
   `sheets get` (lecture), `sheets update` (écriture à position exacte), `gmail send` (récap).
 - **Scripts helper** (dans `~/.hermes/skills/ecommerce/recherche-produit-trendtrack/scripts/`) :
-  - `query_ads.py` — batch des 3 méthodes de recherche TrendTrack
+  - `query_ads_api.py` — batch des 3 méthodes de recherche TrendTrack via l'API publique REST (l'ancien `query_ads.py` basé MCP est archivé dans `scripts/archived/`)
   - `pre_filter.py` — pré-filtrage programmatique (dédup domaine vs Sheet)
   - `cogs_image_search.py` — recherche COGS par image (Apify 1688 + fallback AliExpress)
   - `aliexpress_image_search.py` — recherche par image AliExpress (Scrapling, utilisé comme fallback par cogs_image_search.py)
@@ -34,16 +34,23 @@ Workflow automatisé de recherche produit dropshipping EU. Tourne en cron tous l
    ```
    Ce fichier sera passé au script de pré-filtrage à l'étape 1.5.
 
-## Étape 1 — Recherche : script batch `query_ads.py`
+## Étape 1 — Recherche : script batch `query_ads_api.py` (API REST directe)
 
 Lancer le script qui exécute les 3 méthodes de recherche en un seul batch (Shopify reach growth, native ads, volume d'ads live) et fusionne/déduplique par domaine :
 
 ```bash
 cd ~/.hermes/skills/ecommerce/recherche-produit-trendtrack
-python3 scripts/query_ads.py --date $(date +%F) > /tmp/tt_candidates_raw.json
+python3 scripts/query_ads_api.py --date $(date +%F) > /tmp/tt_candidates_raw.json
+# mode test 1 seule méthode : --method 1|2|3 (≈ 30 crédits)
 ```
 
+**2026-10-08 : `query_ads_api.py` appelle l'API publique REST directe (déterministe, sans couche MCP).** Auth : clé `sk_tt_...` dans `~/.hermes/mcp-tokens/trendtrack_rest_key.txt` (créée depuis le dashboard TrendTrack Settings → API ; l'auth OAuth MCP ne fonctionne PAS sur `/v1/*` — 503 auth_provider_unavailable ; le refresh OAuth via urllib est bloqué par Cloudflare, passer par curl). Endpoint : `POST https://api.trendtrack.io/v1/ads/query`, réponse `{data: [...]}` (même forme que structuredContent.data du MCP). Contrat public camelCase : `adReachGrowth` = `{anyOf:[{all:[{operator:"gte"|"lte", value, period}]}]}` (period last30d NON supporté — last7d uniquement) ; `sortBy` n'accepte plus `reachDelta30d` (utiliser `reachDelta7d`) ; `adCountries.exclude` NON supporté → utiliser `shopCreationCountries.exclude`. `--method 1|2|3` lance une seule méthode (~30 crédits) pour les tests.
+
 Le script retourne un JSON array de candidats (~20-50 après dédup des 3×20 résultats). Pas de relance de page 2 : le volume initial est suffisant. Coût : 90 crédits fixes (3 × `search_ads` à 30 crédits). Si une ad clé manque de données (dates, reach), compléter avec `scan_ad(ad_identifier=...)`.
+
+⚠️ 2026-10-08 : le backend `ads-search` a changé — `sort_by=reachDelta30d`, `ad_rank_mode`, `ad_countries.exclude`, `ad_reach_growth` last30d et `reach_period=last30d` sont rejetés (« not representable »). L'ancien script MCP `query_ads.py` est archivé dans `scripts/archived/` (remplacé par `query_ads_api.py`). En cas de résultats dominés par des méga-marques, ajouter `maxTraffic: 1000000` aux recherches (filtre anti-méga-marque) pour débusquer les DNVB.
+
+⚠️ `find_similar_shops` : la réponse est `structuredContent.data[].shop` avec `domain`, `traffic.monthlyVisits`, `advertising.activeAds` — le champ ads n'est PAS au niveau racine.
 
 ## Étape 1.5 — Pré-filtrage programmatique
 
@@ -83,7 +90,7 @@ Pour chaque candidat du JSON filtré, évaluer avec jugement LLM :
 
 COGS = prix produit **seul** (hors shipping, comme les lignes existantes du Sheet). Conversion ¥→€ ≈ 0,128 (¥30 ≈ 3,84€). Toujours noter la source dans le Commentaire (« COGS 1688 ¥XX » ou « COGS AliExpress XX€ »).
 
-Pour chaque candidat retenu, utiliser l'image de l'ad creative (`image_url` du résultat `query_ads.py`) pour chercher le produit :
+Pour chaque candidat retenu, utiliser l'image de l'ad creative (`image_url` du résultat `query_ads_api.py`) pour chercher le produit :
 
 ```bash
 python3 scripts/cogs_image_search.py \

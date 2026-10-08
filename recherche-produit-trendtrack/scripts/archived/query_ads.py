@@ -149,9 +149,13 @@ def build_queries(ref_date: datetime) -> List[Dict[str, Any]]:
         "min_reach": 36000,
         "max_reach": 10000000,
         "reach_period": "total",
-        "ad_reach_growth": [{"period": "last30d", "comparison": "greater", "value": 135}],
+        # 2026-10-08: ad_reach_growth n'accepte que last7d côté backend → fenêtre 7j.
+        "ad_reach_growth": [{"period": "last7d", "comparison": "greater", "value": 135}],
         "status": "active",
-        "sort_by": "reachDelta30d",
+        # 2026-10-08: sort_by=reachDelta30d rejeté par le backend (« not representable
+        # on ads-search ») → tri par reach total ; la croissance ≥135% reste filtrée
+        # via ad_reach_growth.
+        "sort_by": "reach",
         "order": "desc",
         "limit": 20,
     }
@@ -163,10 +167,12 @@ def build_queries(ref_date: datetime) -> List[Dict[str, Any]]:
         "min_description_length": 1000,
         "ad_countries": {"include": ["FR", "DE", "NL"]},
         "ad_languages": ["fr", "de", "nl"],
-        "ad_rank_mode": "percentile",
-        "ad_rank_basis": "current",
-        "max_ad_rank_value": 20,
-        "reach_period": "last30d",
+        # 2026-10-08: ad_rank_mode/ad_rank_basis/max_ad_rank_value rejetés par le
+        # backend (« not representable ») → filtres rank remplacés par min_reach
+        # sur 30j pour garder les grosses ads natives.
+        # 2026-10-08: reach_period n'accepte que "total" côté backend.
+        "reach_period": "total",
+        "min_reach": 100000,
         "sort_by": "reach",
         "order": "desc",
         "status": "active",
@@ -176,7 +182,12 @@ def build_queries(ref_date: datetime) -> List[Dict[str, Any]]:
     method3 = {
         "_tag": "volume_live",
         "created_after": j_30,
-        "ad_countries": {"exclude": ["IN", "PK", "US"]},
+        # 2026-10-08: ad_countries.exclude rejeté par le backend → include d'une
+        # liste UE élargie à la place de l'exclusion IN/PK/US.
+        "ad_countries": {"include": [
+            "FR", "DE", "NL", "BE", "AT", "CH", "ES", "IT", "PT", "IE",
+            "DK", "SE", "NO", "FI", "PL", "CZ", "LU",
+        ]},
         "min_active_ads": 50,
         "ads_time_period": "last24h",
         "status": "active",
@@ -208,13 +219,58 @@ def normalize_domain(url: str) -> str:
 
 
 def extract_ad_fields(ad: Dict[str, Any], method_tag: str) -> Optional[Dict[str, Any]]:
-    """Extract and normalize fields from a raw search_ads result entry."""
-    # The MCP response structure may vary — handle nested and flat formats
+    """Extract and normalize fields from a raw search_ads result entry.
+
+    2026-10-08: handles the new normalized structuredContent objects
+    (id, media, advertiser, content, metrics, audience) plus the legacy
+    flat format as fallback.
+    """
     if isinstance(ad, str):
         # Sometimes the MCP returns text content; skip those
         return None
 
-    # Try to extract from common field names
+    # ---- New normalized format (structuredContent.data) ----
+    if "advertiser" in ad or "metrics" in ad or "landingPageDomain" in (ad.get("content") or {}):
+        content = ad.get("content") or {}
+        advertiser = ad.get("advertiser") or {}
+        metrics = ad.get("metrics") or {}
+        media = ad.get("media") or {}
+        audience = ad.get("audience") or {}
+        landing_url = content.get("landingPageUrl") or ""
+        shop_domain = content.get("landingPageDomain") or normalize_domain(landing_url)
+        body = content.get("body") or ""
+        ad_id = ad.get("id") or ""
+        trendtrack_url = (
+            f"https://app.trendtrack.io/ads/{ad_id.replace('facebook_', '', 1)}"
+            if ad_id else ""
+        )
+        return {
+            "ad_id": str(ad_id),
+            "collation_id": ad.get("collationId") or "",
+            "trendtrack_url": trendtrack_url,
+            "shop_domain": normalize_domain(shop_domain) if shop_domain else "",
+            "landing_url": landing_url,
+            "title": content.get("title") or advertiser.get("name") or "",
+            "description": body[:500] if body else "",
+            "image_url": media.get("mediaUrl") or media.get("thumbnailUrl") or "",
+            "reach_total": metrics.get("reach") or 0,
+            "reach_delta_30d": metrics.get("reachDelta30d") or 0,
+            "reach_delta_7d": metrics.get("reachDelta7d") or 0,
+            "active_ads": advertiser.get("liveAdsCount") or 0,
+            "days_running": ad.get("daysRunning") or 0,
+            "country_breakdown": {
+                "targeted": audience.get("targetedCountries") or [],
+                "main": audience.get("mainCountry") or "",
+            },
+            "media_type": media.get("type") or "",
+            "method": method_tag,
+            "first_seen": ad.get("firstSeenAt") or "",
+            "last_seen": ad.get("lastSeenAt") or "",
+            "advertiser_name": advertiser.get("name") or "",
+            "estimated_spend": metrics.get("estimatedSpend") or 0,
+        }
+
+    # ---- Legacy flat format (fallback) ----
     ad_id = (
         ad.get("ad_id")
         or ad.get("ad_identifier")
@@ -285,10 +341,16 @@ def extract_ad_fields(ad: Dict[str, Any], method_tag: str) -> Optional[Dict[str,
 def parse_mcp_response(response: Any) -> List[Dict[str, Any]]:
     """Parse MCP tool response into a list of ad dicts.
 
-    The MCP response from tools/call wraps the data in a 'content' array
-    where each item has a 'type' and a 'text' field (for text content).
-    The actual ad data is JSON embedded in the text field.
+    2026-10-08: the backend now returns normalized objects in
+    response.structuredContent.data (the 'content' array is Markdown
+    prose for LLM consumption — never parse it). Legacy JSON-in-text and
+    flat-array formats are kept as fallbacks.
     """
+    # New canonical format: structuredContent.data
+    if isinstance(response, dict) and isinstance(response.get("structuredContent"), dict):
+        data = response["structuredContent"].get("data")
+        if isinstance(data, list):
+            return data
     # Handle the standard MCP content array format
     if isinstance(response, dict) and "content" in response:
         contents = response["content"]
