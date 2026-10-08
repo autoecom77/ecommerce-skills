@@ -33,7 +33,7 @@ import sys
 from typing import Any, Dict, List
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
-from query_ads_api import api_query, load_api_key  # noqa: E402
+from query_ads_api import api_query, load_api_key, extract_image_url  # noqa: E402
 
 
 def enrich_shop(domain: str, api_key: str, limit: int = 20) -> Dict[str, Any]:
@@ -56,13 +56,15 @@ def enrich_shop(domain: str, api_key: str, limit: int = 20) -> Dict[str, Any]:
         ad_id = str(ad.get("id") or "")
         ads.append({
             "ad_id": ad_id,
-            "trendtrack_url": f"https://app.trendtrack.io/en/ju-2/explorer?tab=ads&ad={ad_id}&adSource=meta" if ad_id else "",
+            "trendtrack_url": f"https://app.trendtrack.io/ads/{ad_id.replace('facebook_', '', 1)}" if ad_id else "",
             "reach": metrics.get("reach") or 0,
             "estimated_spend": metrics.get("estimatedSpend") or 0,
             "first_seen": (ad.get("firstSeenAt") or "")[:10],
             "last_seen": (ad.get("lastSeenAt") or "")[:10],
             "days_running": ad.get("daysRunning") or 0,
+            "image_url": extract_image_url(media),
             "media_url": media.get("mediaUrl") or media.get("thumbnailUrl") or "",
+            "media_type": media.get("type") or "",
             "landing_url": content.get("landingPageUrl") or "",
             "body": (content.get("body") or "")[:200],
         })

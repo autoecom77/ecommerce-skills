@@ -1,61 +1,55 @@
 ---
 name: recherche-produit-trendtrack
 description: "Runs the TrendTrack product research: ads → COGS → Sheet."
-version: 2.0.0
+version: 2.2.0
 ---
 
 # Recherche Produit TrendTrack
 
-Workflow automatisé de recherche produit dropshipping EU. Tourne en cron tous les 2 jours à 9h00 Paris (7h00 UTC). Ajoute au Google Sheet « Tableau de Recherche Produit » TOUS les produits qui passent les filtres — aucun plafond de nombre, cible ≥ 5 par run — classés par potentiel et par niche. Trigger : cron tous-les-2-jours, « recherche produit », « trouve des produits ».
+Workflow automatisé de recherche produit dropshipping EU. Tourne en cron tous les 2 jours à 9h00 Paris (7h00 UTC). Ajoute au Google Sheet « Tableau de Recherche Produit » tous les produits qui passent les filtres, classés par potentiel et par niche. Trigger : cron tous-les-2-jours, « recherche produit », « trouve des produits ».
 
-## Accès (déjà configurés sur cette machine)
+## Accès
 
-- **TrendTrack MCP V3** : serveur `trendtrack` (OAuth) dans `~/.hermes/config.yaml` → outils `mcp__trendtrack__*` (`search_ads`, `scan_ad`, `find_similar_shops`, `check_credits`). S'ils ne sont pas chargés dans la session : `tool_search` puis `tool_describe`.
-- **Sheet destination** : « Tableau de Recherche Produit » — ID `1dpjf3fYBPG8eXgsbRnpi3QLdHdPwQB40W86Yz3pVPEM`, onglet `Products` (gid 815136391). 75 colonnes : 72 d'origine + `Score /100` (BU) + `Concurrent 1` (BV) + `Concurrent 2` (BW).
+- **TrendTrack REST API** : clé `sk_tt_...` dans `~/.hermes/mcp-tokens/trendtrack_rest_key.txt`.
+- **Sheet destination** : « Tableau de Recherche Produit » — ID `1dpjf3fYBPG8eXgsbRnpi3QLdHdPwQB40W86Yz3pVPEM`, onglet `Products` (gid 815136391). Colonnes 1 à 73 remplies ; colonnes `Conc1` (BV) et `Conc2` (BW) restent vides (concurrents non enrichis).
 - **Google API CLI** :
   ```bash
   GAPI="$HOME/.hermes/venvs/gws/bin/python $HOME/.hermes/skills/productivity/google-workspace/scripts/google_api.py"
   ```
   `sheets get` (lecture), `sheets update` (écriture à position exacte), `gmail send` (récap).
 - **Scripts helper** (dans `~/.hermes/skills/ecommerce/recherche-produit-trendtrack/scripts/`) :
-  - `query_ads_api.py` — batch des 3 méthodes de recherche TrendTrack via l'API publique REST (l'ancien `query_ads.py` basé MCP est archivé dans `scripts/archived/`)
-  - `pre_filter.py` — pré-filtrage programmatique (dédup domaine vs Sheet)
-  - `cogs_image_search.py` — recherche COGS par image (Apify 1688 + fallback AliExpress)
-  - `aliexpress_image_search.py` — recherche par image AliExpress (Scrapling, utilisé comme fallback par cogs_image_search.py)
-  - `enrich_api.py` — enrichissement programmatique par produit via l'API REST (recherche ads par domaine ; remplace le workflow MCP search_ads + find_similar_shops depuis 2026-10-09)
+  - `query_ads_api.py` — batch des 3 méthodes de recherche TrendTrack via l'API REST
+  - `pre_filter.py` — déduplication domaine contre les boutiques déjà présentes dans le Sheet
+  - `price_filter.py` — filtrage mathématique déterministe (prix < 30€, near-miss 29.90–29.99€, coefficient X > 4 si 30–40€, X ≥ 3.5 si > 40€)
+  - `cogs_image_search.py` — recherche COGS par image (Apify 1688 + fallback AliExpress Scrapling)
+  - `aliexpress_image_search.py` — moteur de recherche par image AliExpress
+  - `enrich_api.py` — récupération programmatique des top ads actives et génération des URLs TrendTrack
 
-## Étape 0 — Pré-checks (obligatoires)
+## Étape 0 — Pré-checks
 
 1. Date du jour : `date +%F` (notée J, sert aux filtres de dates).
-2. `mcp__trendtrack__check_credits` → si remaining < 500 : STOP et email d'alerte « crédits TrendTrack faibles (N restants) » à autoecom77@gmail.com.
-3. Extraction données existantes pour dédoublonnage :
+2. Vérification crédits : lire le solde TrendTrack (`POST https://api.trendtrack.io/v1/credits`). Si remaining < 500 : STOP et email d'alerte « crédits TrendTrack faibles (N restants) » à autoecom77@gmail.com.
+3. Extraction des URLs existantes pour dédoublonnage :
    ```bash
    $GAPI sheets get 1dpjf3fYBPG8eXgsbRnpi3QLdHdPwQB40W86Yz3pVPEM 'Products!B2:C2000' \
      > /tmp/tt_sheet_existing.json
    ```
-   Ce fichier sera passé au script de pré-filtrage à l'étape 1.5.
 
-## Étape 1 — Recherche : script batch `query_ads_api.py` (API REST directe)
+## Étape 1 — Recherche batch (`query_ads_api.py`)
 
-Lancer le script qui exécute les 3 méthodes de recherche en un seul batch (Shopify reach growth, native ads, volume d'ads live) et fusionne/déduplique par domaine :
+Lancer le script qui exécute les 3 méthodes de recherche en une seule passe via l'API REST publique (Shopify reach growth, native ads, volume d'ads live), fusionne et déduplique par domaine :
 
 ```bash
 cd ~/.hermes/skills/ecommerce/recherche-produit-trendtrack
 python3 scripts/query_ads_api.py --date $(date +%F) > /tmp/tt_candidates_raw.json
-# mode test 1 seule méthode : --method 1|2|3 (≈ 30 crédits)
+# Mode test 1 méthode : --method 1|2|3 (≈ 30 crédits)
 ```
 
-**2026-10-08 : `query_ads_api.py` appelle l'API publique REST directe (déterministe, sans couche MCP).** Auth : clé `sk_tt_...` dans `~/.hermes/mcp-tokens/trendtrack_rest_key.txt` (créée depuis le dashboard TrendTrack Settings → API ; l'auth OAuth MCP ne fonctionne PAS sur `/v1/*` — 503 auth_provider_unavailable ; le refresh OAuth via urllib est bloqué par Cloudflare, passer par curl). Endpoint : `POST https://api.trendtrack.io/v1/ads/query`, réponse `{data: [...]}` (même forme que structuredContent.data du MCP). Contrat public camelCase : `adReachGrowth` = `{anyOf:[{all:[{operator:"gte"|"lte", value, period}]}]}` (period last30d NON supporté — last7d uniquement) ; `sortBy` n'accepte plus `reachDelta30d` (utiliser `reachDelta7d`) ; `adCountries.exclude` NON supporté → utiliser `shopCreationCountries.exclude`. `--method 1|2|3` lance une seule méthode (~30 crédits) pour les tests.
+Le script retourne un tableau JSON de candidats (~20–50 après dédup). Coût fixe : 90 crédits (3 × 30 crédits).
 
-Le script retourne un JSON array de candidats (~20-50 après dédup des 3×20 résultats). Pas de relance de page 2 : le volume initial est suffisant. Coût : 90 crédits fixes (3 × `search_ads` à 30 crédits). Si une ad clé manque de données (dates, reach), compléter avec `scan_ad(ad_identifier=...)`.
+## Étape 1.5 — Déduplication Sheet (`pre_filter.py`)
 
-⚠️ 2026-10-08 : le backend `ads-search` a changé — `sort_by=reachDelta30d`, `ad_rank_mode`, `ad_countries.exclude`, `ad_reach_growth` last30d et `reach_period=last30d` sont rejetés (« not representable »). L'ancien script MCP `query_ads.py` est archivé dans `scripts/archived/` (remplacé par `query_ads_api.py`). En cas de résultats dominés par des méga-marques, ajouter `maxTraffic: 1000000` aux recherches (filtre anti-méga-marque) pour débusquer les DNVB.
-
-⚠️ `find_similar_shops` : la réponse est `structuredContent.data[].shop` avec `domain`, `traffic.monthlyVisits`, `advertising.activeAds` — le champ ads n'est PAS au niveau racine.
-
-## Étape 1.5 — Pré-filtrage programmatique
-
-Filtrer les candidats avant l'analyse LLM avec le script de pré-filtrage (élimine les domaines déjà présents dans le Sheet) :
+Éliminer immédiatement les boutiques déjà enregistrées dans le Google Sheet :
 
 ```bash
 python3 scripts/pre_filter.py \
@@ -64,34 +58,26 @@ python3 scripts/pre_filter.py \
   > /tmp/tt_candidates_filtered.json
 ```
 
-Lire le JSON résultant (`/tmp/tt_candidates_filtered.json`). Les candidats restants passent à l'étape 2 pour le filtrage LLM (éligibilité produit DNVB, prix sur landing, etc.). Les rejets sont loggués sur stderr.
+## Étape 2 — Prix de vente & Pré-filtrage prix
 
-## Étape 2 — Filtrage dur (règles utilisateur)
+Pour chaque candidat du JSON filtré, extraire le prix de vente en euros depuis sa landing page (`landing_url`).
+Puis lancer le pré-filtrage prix pour éliminer immédiatement les produits vendus à moins de 30 € avant la recherche COGS :
 
-Pour chaque candidat du JSON filtré, évaluer avec jugement LLM :
+```bash
+python3 scripts/price_filter.py --mode price-only \
+  --input /tmp/tt_candidates_with_prices.json \
+  --near-misses-file /tmp/tt_near_misses.json \
+  > /tmp/tt_candidates_priced.json
+```
 
-**EXCLUSIONS CATÉGORIES** (rejet immédiat) :
-- Compléments alimentaires (gummies, vitamines, ashwagandha, maca, berberine, etc.)
-- Lampadaires (floor lamps)
-- Tables (dining table, table lourde)
-- Jouets bébés (baby toys)
-- Garde-fous : domaines `*.myshopify.com`, ebooks/guides/gift cards, ésotérique (orgonite, chakra…), mobilier lourd (matelas, canapé)
-- **Produit éligible uniquement** : landing PRODUIT d'un shop DNVB. EXCLURE méga-marques (shop > 1M visites/mois : ex. Volkswagen, Decathlon, LEGO, Zalando, REWE…), marketplaces, services (assurance, banque, RH/jobs), apps, médias, événements, listicles/blogs. Un même produit scalé par plusieurs pages (shop + pages « magazine »/« docteur ») = BON signal, le noter en Commentaire.
-- Near-miss prix (29,90–29,99€) : EXCLU strictement, mais le mentionner dans le récap email.
+Le script élimine les produits < 30 € et enregistre les quasi-miss (29,90–29,99 €) dans `/tmp/tt_near_misses.json` pour citation dans l'email.
+Seuls les produits validés passent à la recherche COGS (évite de consommer du temps/requêtes sur des produits non éligibles).
 
-**PAS DE PLAFOND DE NOMBRE** : tout candidat qui passe toutes les règles (exclusions ci-dessus + prix/coeff ci-dessous) est ajouté au Sheet. Ne JAMAIS tronquer la liste aux 3 ou 5 « meilleurs ».
+## Étape 3 — Recherche COGS par image & Validation ratio
 
-**RÈGLES PRIX / COEFF** (X = Prix vente € / COGS €) :
-- Prix < 30€ → EXCLU
-- Prix 30–40€ → X ≥ 4 requis
-- Prix > 40€ → X ≥ 3.5 requis
-- Prix en devise non-€ : convertir avant comparaison.
+COGS = prix produit **seul** (hors frais de port). Conversion ¥→€ ≈ 0,128 (¥30 ≈ 3,84 €). Toujours consigner la source dans le Commentaire (« COGS 1688 ¥XX » ou « COGS AliExpress XX€ »).
 
-## Étape 3 — COGS (image search d'abord, AliExpress en fallback)
-
-COGS = prix produit **seul** (hors shipping, comme les lignes existantes du Sheet). Conversion ¥→€ ≈ 0,128 (¥30 ≈ 3,84€). Toujours noter la source dans le Commentaire (« COGS 1688 ¥XX » ou « COGS AliExpress XX€ »).
-
-Pour chaque candidat retenu, utiliser l'image de l'ad creative (`image_url` du résultat `query_ads_api.py`) pour chercher le produit :
+Pour chaque candidat retenu, lancer la recherche COGS par image à partir du visuel de la pub (`image_url`) :
 
 ```bash
 python3 scripts/cogs_image_search.py \
@@ -99,15 +85,28 @@ python3 scripts/cogs_image_search.py \
   --product-name "<nom EN du produit>"
 ```
 
-Le script cherche sur 1688 via **Apify Image Search** (prioritaire), puis **AliExpress Image Search** via `aliexpress_image_search.py` en fallback.
+Ordre de recherche du script :
+1. **1688 via Apify Image Search** (si configuré)
+2. **AliExpress Image Search** via `aliexpress_image_search.py` (Scrapling)
+3. Si introuvable des deux $\rightarrow$ calcul heuristique : COGS = Prix ÷ diviseur de niche (Cosmétique 6.5, Maison/Cuisine 5, Apparel mécanisme 6, Outdoor/Hobby/Sport 5, Santé soft 6.5, Puériculture 6, défaut 5.5) avec mention « COGS estimé (heuristique) » en Commentaire.
 
-Résultat JSON : `cogs_eur`, `product_url`, `method`, `confidence`.
+### Validation mathématique finale du coefficient ($X$)
+Une fois tous les COGS renseignés, appliquer le filtrage strict déterministe :
 
-- Si `method=apify_1688` : noter « COGS 1688 ¥XX (image search) » dans le Commentaire.
-- Si `method=aliexpress_image` : noter « COGS AliExpress XX€ (image search) » dans le Commentaire.
-- Si `method=not_found` → heuristique : COGS = Prix ÷ diviseur de niche (Cosmétique 6.5, Maison/Cuisine 5, Apparel mécanisme 6, Outdoor/Hobby/Sport 5, Santé soft 6.5, Puériculture 6, défaut 5.5), et écrire « COGS estimé (heuristique) » dans le Commentaire.
+```bash
+python3 scripts/price_filter.py --mode full \
+  --input /tmp/tt_candidates_with_cogs.json \
+  --near-misses-file /tmp/tt_near_misses.json \
+  > /tmp/tt_candidates_kept.json
+```
 
-Recalculer X avec le COGS réel ; si X passe sous le seuil de l'étape 2 → retirer le produit.
+Règles appliquées par le script :
+- Prix < 30 € $\rightarrow$ exclu
+- Prix 30–40 € $\rightarrow$ $X > 4{,}0$ requis (strictement supérieur à 4)
+- Prix > 40 € $\rightarrow$ $X \ge 3{,}5$ requis
+- Les produits sous le seuil sont exclus (loggués sur stderr).
+
+La sortie `/tmp/tt_candidates_kept.json` contient uniquement les produits validés avec leur `x_coefficient` exact.
 
 ## Étape 4 — Score /100
 
@@ -127,59 +126,55 @@ Recalculer X avec le COGS réel ; si X passe sous le seuil de l'étape 2 → ret
 
 Cap à 100. **Priorité** : Score ≥ 70 → `1 Urgent` ; 50–69 → `2 Important` ; < 50 → `3 Normal`.
 
-## Étape 5 — Enrichissement par produit (programmatique, script `enrich_api.py`)
+## Étape 5 — Enrichissement par produit (`enrich_api.py`)
 
-**2026-10-09 : l'enrichissement est un script via l'API REST publique (comme `query_ads_api.py`) — plus aucun appel MCP. L'enrichissement « Concurrents » (find_similar_shops) est supprimé à la demande utilisateur : colonnes BV/BW restent vides.**
-
-Pour chaque produit retenu :
+Pour chaque produit retenu, récupérer ses pubs actives via l'API REST TrendTrack :
 
 ```bash
 cd ~/.hermes/skills/ecommerce/recherche-produit-trendtrack
 python3 scripts/enrich_api.py \
   --candidates /tmp/tt_candidates_kept.json \
   > /tmp/tt_enriched.json
-# test sur un seul shop : python3 scripts/enrich_api.py --shop <domaine>
+# Test unitaire : python3 scripts/enrich_api.py --shop <domaine>
 ```
 
-Le script appelle `POST /v1/ads/query` avec `{search: "<domaine>", searchType: "domain", status: "active", limit: 20, sortBy: "reach", order: "desc"}` (≤ 5 crédits/shop actuellement — coût mesuré 5 crédits sur luveon.com et belle-body.de, ~10× moins cher que le MCP search_ads) et retourne par candidat :
+Le script retourne pour chaque boutique :
+- `ads_count` : nombre d'ads actives (à reporter dans la colonne « Ads » / F, plafonné à 20).
+- `ads[]` triées par reach décroissant : génère les liens TrendTrack `https://app.trendtrack.io/ads/<id>` pour remplir les blocs AD1 à AD8.
+- Les colonnes concurrents (BV/BW) restent vides.
 
-- `ads_count` — nombre d'ads actives trouvées (page 1 : 20 par page, total dans `pagination.total`) → écrire ce nombre dans la colonne « Ads » (F), plafonné à l'affichage voulu (p.ex. « 20 »).
-- `ads[]` triées par reach desc : `trendtrack_url`, `reach`, `first_seen`, `last_seen`, `media_url`, `landing_url`, `body`.
+## Étape 6 — Écriture dans le Sheet
 
-NOTES API (découvertes 2026-10-09) :
-- La recherche par domaine utilise `search` + `searchType: "domain"` (l'ancienne forme `query`/`searchIn` renvoie des résultats non filtrés).
-- Le renvoi est paginé (20 par page, `pagination.total` peut être large) : on prend la page 1 (top 20 ads par reach), pas besoin de plus.
-- `trendtrack_url` = lien TrendTrack fonctionnel : `https://app.trendtrack.io/en/ju-2/explorer?tab=ads&ad=<ad_id>&adSource=meta` (ad_id AVEC préfixe `facebook_`). ⚠️ 2026-10-09 : l'ancien format `https://app.trendtrack.io/ads/<id>` (sans workspace/explorer params) renvoie une 404 dans l'app — ne plus l'utiliser. Le lien `&ad=` ouvre le drawer détail de l'ad dans l'explorer.
-
-## Étape 6 — Écriture dans le Sheet (JAMAIS modifier les lignes existantes)
-
-Ligne de 75 colonnes :
+Ligne de 75 colonnes (JAMAIS modifier les lignes existantes) :
 ```
 [FALSE, Nom, URL, Pays, Niche, Ads, Priorité, "", COGS, Prix, X,
  AD1_url, AD1_imp, AD1_date1, AD1_date2, … AD8 max (blocs de 4),
- …, Commentaire, Score]
+ …, Commentaire, Score, "", ""]
 ```
 - Colonnes 12–71 : blocs AD1..AD15 (url, impressions/spend, date 1, date 2) — remplir 8 ads max, le reste vide.
-- Dates format `Mmm YY` (ex. `Sep 26`) **en texte forcé** : préfixer d'une apostrophe (`'Dec 25`), sinon Sheets convertit en vraie date avec l'année en cours (piège constaté). Date 1 = première vue, date 2 = dernière vue (si inconnue : mois en cours, l'ad est active).
+- Dates format `Mmm YY` (ex. `'Dec 25`) **en texte forcé** préfixé d'une apostrophe pour éviter les réinterprétations par Google Sheets.
 - Impressions/spend format bucket : `10 M +`, `7 - 10 M`, `3 - 7 M`, `1 - 3 M`, `< 1 M`.
-- URL ad : `trendtrack_url` de `enrich_api.py` = `https://app.trendtrack.io/ads/<id>` (lien dashboard TrendTrack, choisi de préférence au lien Facebook Ad Library natif).
+- URL ad : `trendtrack_url` fourni par `enrich_api.py`.
 - Lignes classées par Priorité croissante puis par niche.
-- **NE PAS utiliser `sheets append`** : la plage « utilisée » du Sheet s'étend à ~966 lignes (formatage historique), `values.append` écrirait en bas de la grille (ligne 967+). Trouver la dernière ligne L avec une valeur en colonne B (`sheets get <SHEET_ID> 'Products'!B1:B2000`), puis écrire à position exacte :
+- Écriture atomique à la première ligne vide :
   ```bash
   $GAPI sheets update 1dpjf3fYBPG8eXgsbRnpi3QLdHdPwQB40W86Yz3pVPEM "Products!A<L+1>:BW<L+n>" --values '<JSON>'
   ```
-  Relire ensuite B(L+1):B(L+n) pour vérifier.
 
 ## Étape 7 — Rapport par email
 
 ```bash
 $GAPI gmail send --to autoecom77@gmail.com --subject "Recherche produit TrendTrack — <date>" --body "<résumé>"
 ```
-Résumé : produits examinés / retenus / ajoutés, crédits consommés (check_credits avant + après), top 3 (nom, prix, X, score, priorité), lien : https://docs.google.com/spreadsheets/d/1dpjf3fYBPG8eXgsbRnpi3QLdHdPwQB40W86Yz3pVPEM/edit?gid=815136391
+Résumé à inclure :
+- Nombre de produits examinés / retenus / ajoutés.
+- Crédits consommés (recherche 90 + ~5 crédits par boutique enrichie).
+- Produits quasi-miss (29,90–29,99 €) capturés depuis `/tmp/tt_near_misses.json`.
+- Top 3 des produits ajoutés (nom, prix, X, score, priorité).
+- Lien direct vers le Sheet : https://docs.google.com/spreadsheets/d/1dpjf3fYBPG8eXgsbRnpi3QLdHdPwQB40W86Yz3pVPEM/edit?gid=815136391
 
 ## Règles opérationnelles
 
-- Crédits limités (10k/période, reset le 21, ~15 runs/mois) : moyenne cible ≤ 650 crédits/run, plafond dur 1 200. Coûts mesurés : `search_ads` REST ≈ 5 crédits/domaine enrichi (2026-10-09), `check_credits`=0 → 90 + 5×N crédits pour N produits enrichis (5 ≈ 115, 10 ≈ 140). Enrichir par Score décroissant ; si le plafond est atteint avant la fin de la liste, arrêter proprement et noter les produits non traités dans l'email de récap. Mesurer avant/après et mettre la conso dans le récap ; < 500 restants → skip le run.
-- Colonnes `Validation / Lancement` et `Kalodata` restent vides (remplissage manuel).
-- Si le MCP trendtrack échoue (OAuth expiré) : email d'alerte court, AUCUN ajout au Sheet.
-- Trendtrack en lecture uniquement (jamais brandtracker/favorites en écriture).
+- Crédits : cible moyenne ≤ 650 crédits/run, plafond dur 1 200. Coûts : 90 crédits (recherche initiale) + ~5 crédits par boutique enrichie. Si le solde restant est < 500 crédits au départ, annuler le run et envoyer un email d'alerte.
+- Colonnes `Validation / Lancement` et `Kalodata` restent vides (remplissage manuel ultérieur).
+- Colonnes `Concurrent 1` et `Concurrent 2` restent vides.

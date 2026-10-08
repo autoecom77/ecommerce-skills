@@ -189,6 +189,24 @@ def normalize_domain(url: str) -> str:
     return url.split("/")[0].split("?")[0].split("#")[0].rstrip(".")
 
 
+def extract_image_url(media: Dict[str, Any]) -> str:
+    """Extract an image URL from the media object.
+    If media type is 'image', use mediaUrl (if present), falling back to thumbnailUrl.
+    If media type is not 'image' (e.g. 'video'), use thumbnailUrl (if present),
+    falling back to mediaUrl.
+    """
+    if not isinstance(media, dict):
+        return ""
+    media_type = (media.get("type") or "").lower()
+    media_url = media.get("mediaUrl") or ""
+    thumb_url = media.get("thumbnailUrl") or ""
+
+    is_video_ext = any(media_url.lower().split("?")[0].endswith(ext) for ext in [".mp4", ".mov", ".webm", ".m4v"])
+    if media_type == "image" and not is_video_ext:
+        return media_url or thumb_url
+    return thumb_url or media_url
+
+
 def extract_ad_fields(ad: Dict[str, Any], method_tag: str) -> Optional[Dict[str, Any]]:
     if not isinstance(ad, dict):
         return None
@@ -209,7 +227,7 @@ def extract_ad_fields(ad: Dict[str, Any], method_tag: str) -> Optional[Dict[str,
         "landing_url": landing_url,
         "title": content.get("title") or advertiser.get("name") or "",
         "description": body[:500] if body else "",
-        "image_url": media.get("mediaUrl") or media.get("thumbnailUrl") or "",
+        "image_url": extract_image_url(media),
         "reach_total": metrics.get("reach") or 0,
         "reach_delta_30d": metrics.get("reachDelta30d") or 0,
         "reach_delta_7d": metrics.get("reachDelta7d") or 0,
