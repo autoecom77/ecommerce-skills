@@ -27,7 +27,7 @@ Methods (user spec, 2026-10-08):
     - technologies: shopify
     - countries: FR, DE, NL
     - languages: fr, de, nl
-    - reach: min 36k, no upper cap (covers 10M+)
+    - reach: min 36k, max 10M (total)
     - reach growth: >= 135% (last7d backend window)
     - status: active
     - sortBy: reachDelta7d desc
@@ -143,8 +143,9 @@ def build_queries(ref_date: datetime, limit: int = 100) -> List[Dict[str, Any]]:
         "adCountries": {"include": ["FR", "DE", "NL"]},
         # Langue: Français Allemand Néerlandais
         "adLanguage": ["fr", "de", "nl"],
-        # Reach au moins 36k à 10M+ (sans cap supérieur pour inclure les gagnants > 10M)
+        # Reach au moins 36k à 10M+
         "minReach": 36000,
+        "maxReach": 10000000,
         "reachPeriod": "total",
         # Évolution du reach: 135% à 1000%+
         # Backend supporte period=last7d
