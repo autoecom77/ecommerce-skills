@@ -141,7 +141,7 @@ python3 scripts/enrich_api.py \
 
 Le script retourne pour chaque boutique :
 - `ads_count` : nombre d'ads actives (à reporter dans la colonne « Ads » / F, plafonné à 20).
-- `ads[]` triées par reach décroissant : génère les liens TrendTrack `https://app.trendtrack.io/ads/<id>` pour remplir les blocs AD1 à AD8.
+- `ads[]` triées par reach décroissant : génère les liens TrendTrack `https://app.trendtrack.io/en/ju-2/explorer?tab=ads&ad=facebook_<id>&adSource=meta` pour remplir les blocs AD1 à AD8.
 - Les colonnes concurrents (BV/BW) restent vides.
 
 ## Étape 6 — Écriture dans le Sheet
@@ -155,7 +155,7 @@ Ligne de 75 colonnes (JAMAIS modifier les lignes existantes) :
 - Colonnes 12–71 : blocs AD1..AD15 (url, impressions/spend, date 1, date 2) — remplir 8 ads max, le reste vide.
 - Dates format `Mmm YY` (ex. `'Dec 25`) **en texte forcé** préfixé d'une apostrophe pour éviter les réinterprétations par Google Sheets.
 - Impressions/spend format bucket : `10 M +`, `7 - 10 M`, `3 - 7 M`, `1 - 3 M`, `< 1 M`.
-- URL ad : `trendtrack_url` fourni par `enrich_api.py`.
+- URL ad : `trendtrack_url` fourni par `enrich_api.py` (format `https://app.trendtrack.io/en/ju-2/explorer?tab=ads&ad=facebook_<id>&adSource=meta`).
 - Lignes classées par Priorité croissante puis par niche.
 - Écriture atomique à la première ligne vide :
   ```bash

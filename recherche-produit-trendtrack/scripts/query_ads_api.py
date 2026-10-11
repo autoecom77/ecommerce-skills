@@ -234,11 +234,13 @@ def extract_ad_fields(ad: Dict[str, Any], method_tag: str) -> Optional[Dict[str,
     landing_url = content.get("landingPageUrl") or ""
     shop_domain = content.get("landingPageDomain") or normalize_domain(landing_url)
     body = content.get("body") or ""
-    ad_id = ad.get("id") or ""
+    ad_id_str = str(ad_id).strip() if ad_id else ""
+    full_ad_id = ad_id_str if ad_id_str.startswith("facebook_") else f"facebook_{ad_id_str}"
+    trendtrack_url = f"https://app.trendtrack.io/en/ju-2/explorer?tab=ads&ad={full_ad_id}&adSource=meta" if ad_id_str else ""
     return {
-        "ad_id": str(ad_id),
+        "ad_id": ad_id_str,
         "collation_id": ad.get("collationId") or "",
-        "trendtrack_url": f"https://app.trendtrack.io/ads/{str(ad_id).replace('facebook_', '', 1)}" if ad_id else "",
+        "trendtrack_url": trendtrack_url,
         "shop_domain": normalize_domain(shop_domain) if shop_domain else "",
         "landing_url": landing_url,
         "title": content.get("title") or advertiser.get("name") or "",

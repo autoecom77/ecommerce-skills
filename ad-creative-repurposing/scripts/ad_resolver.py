@@ -42,6 +42,12 @@ def extract_full_ad_id(url: str) -> Optional[str]:
     m = re.search(r"/ads/(facebook_\d+)", url)
     if m:
         return m.group(1)
+    m = re.search(r"/ads/(\d+)", url)
+    if m:
+        return f"facebook_{m.group(1)}"
+    m = re.search(r"[?&]ad=(\d+)", url)
+    if m:
+        return f"facebook_{m.group(1)}"
     m = re.search(r"[?&]id=(facebook_)?(\d+)", url)
     if m:
         return f"facebook_{m.group(2)}"
@@ -74,7 +80,7 @@ def resolve_media_via_rest(full_ad_id: str) -> Dict[str, Any]:
         "media_type": m_type,
         "media_url": media_url,
         "ad_id": full_ad_id,
-        "source_url": f"https://app.trendtrack.io/ads/{full_ad_id}",
+        "source_url": f"https://app.trendtrack.io/en/ju-2/explorer?tab=ads&ad={full_ad_id}&adSource=meta",
         "resolver": "trendtrack_rest",
     }
 

@@ -14,9 +14,8 @@ Output: JSON array, same candidates enriched with:
 For each shop:
   POST /v1/ads/query  {search, searchType:"domain", status:"active",
                        limit 20 (default, no pagination), sortBy reach desc}
-  → ads = rows back, each with trendtrack_url = https://app.trendtrack.io/ads/<id>
-    (this is the TrendTrack ad link, NOT the native final ad URL — user
-     requested 2026-10-09).
+  → ads = rows back, each with trendtrack_url = https://app.trendtrack.io/en/ju-2/explorer?tab=ads&ad=facebook_<id>&adSource=meta
+    (this is the TrendTrack explorer ad link — user workspace ju-2).
 
 Usage:
   python3 enrich_api.py --candidates /tmp/tt_candidates_filtered.json > /tmp/enriched.json
@@ -34,6 +33,17 @@ from typing import Any, Dict, List
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 from query_ads_api import api_query, load_api_key, extract_image_url  # noqa: E402
+
+
+def format_trendtrack_ad_url(ad_id: str, ad_source: str = "meta") -> str:
+    """Format TrendTrack explorer ad URL.
+    Format: https://app.trendtrack.io/en/ju-2/explorer?tab=ads&ad=facebook_<id>&adSource=meta
+    """
+    if not ad_id:
+        return ""
+    clean_id = str(ad_id).strip()
+    full_id = clean_id if clean_id.startswith("facebook_") else f"facebook_{clean_id}"
+    return f"https://app.trendtrack.io/en/ju-2/explorer?tab=ads&ad={full_id}&adSource={ad_source}"
 
 
 def enrich_shop(domain: str, api_key: str, limit: int = 20) -> Dict[str, Any]:
@@ -56,7 +66,7 @@ def enrich_shop(domain: str, api_key: str, limit: int = 20) -> Dict[str, Any]:
         ad_id = str(ad.get("id") or "")
         ads.append({
             "ad_id": ad_id,
-            "trendtrack_url": f"https://app.trendtrack.io/ads/{ad_id.replace('facebook_', '', 1)}" if ad_id else "",
+            "trendtrack_url": format_trendtrack_ad_url(ad_id, "meta"),
             "reach": metrics.get("reach") or 0,
             "estimated_spend": metrics.get("estimatedSpend") or 0,
             "first_seen": (ad.get("firstSeenAt") or "")[:10],
