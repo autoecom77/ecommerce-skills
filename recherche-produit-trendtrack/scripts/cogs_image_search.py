@@ -413,6 +413,106 @@ def search_aliexpress_image(
 
 
 # ---------------------------------------------------------------------------
+# 1688 Keyword Search (fallback 2)
+# ---------------------------------------------------------------------------
+def search_1688_keyword(
+    keyword: str,
+    apify_token: str,
+    max_results: int = 5,
+) -> Optional[Dict[str, Any]]:
+    """Search 1688 products by keyword using Apify crawleast/1688-product-scraper actor."""
+    if not keyword or not apify_token:
+        return None
+
+    actor_id = "crawleast~1688-product-scraper"
+    api_url = f"https://api.apify.com/v2/acts/{actor_id}/runs"
+
+    payload_data = {
+        "search": keyword,
+        "maxItems": max_results,
+    }
+    payload = json.dumps(payload_data).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {apify_token}",
+    }
+
+    req = urllib.request.Request(api_url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            run_data = json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"[cogs] Apify 1688 keyword run start failed: {e}", file=sys.stderr)
+        return None
+
+    run_id = run_data.get("data", {}).get("id")
+    if not run_id:
+        return None
+
+    dataset_id = None
+    for _ in range(12):  # 12 × 5s = 60s
+        time.sleep(5)
+        status_url = f"https://api.apify.com/v2/actor-runs/{run_id}?token={apify_token}"
+        try:
+            with urllib.request.urlopen(status_url, timeout=10) as resp:
+                status_data = json.loads(resp.read().decode())
+            status = status_data.get("data", {}).get("status", "")
+            if status == "SUCCEEDED":
+                dataset_id = status_data["data"].get("defaultDatasetId")
+                break
+            elif status in ("FAILED", "ABORTED", "TIMED-OUT"):
+                return None
+        except Exception:
+            pass
+
+    if not dataset_id:
+        return None
+
+    results_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={apify_token}"
+    try:
+        with urllib.request.urlopen(results_url, timeout=15) as resp:
+            dataset_rows = json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+    if not dataset_rows:
+        return None
+
+    matches = []
+    for item in dataset_rows[:max_results]:
+        price_cny = item.get("priceYuan") or item.get("price") or item.get("consignPriceYuan")
+        if price_cny is not None:
+            try:
+                price_cny = float(str(price_cny).replace("¥", "").replace(",", "").strip())
+                price_eur = round(price_cny * CONVERSION_RATES["CNY"], 2)
+            except ValueError:
+                continue
+            matches.append({
+                "url": item.get("detailUrl") or item.get("url") or "",
+                "price_cny": price_cny,
+                "price_eur": price_eur,
+                "title": item.get("title") or item.get("titleEn") or "",
+                "image_url": item.get("imageUrl") or "",
+            })
+
+    if not matches:
+        return None
+
+    matches.sort(key=lambda x: x["price_eur"])
+    best = matches[0]
+    return {
+        "method": "apify_1688_keyword",
+        "source": "1688",
+        "cogs_eur": best["price_eur"],
+        "cogs_original": best["price_cny"],
+        "cogs_currency": "CNY",
+        "product_url": best["url"],
+        "confidence": "medium",
+        "matches": matches,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -491,6 +591,20 @@ def main():
 
     if result:
         print(f"[cogs] ✓ Found via AliExpress: {result['cogs_eur']}€", file=sys.stderr)
+        json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
+        print(file=sys.stdout)
+        return
+
+    # ---- Method 3: 1688 Keyword Search (fallback 2) ----
+    if product_name and apify_token:
+        try:
+            print(f"[cogs] Falling back to 1688 Keyword Search for: {product_name}...", file=sys.stderr)
+            result = search_1688_keyword(product_name, apify_token)
+        except Exception as e:
+            print(f"[cogs] 1688 Keyword search error: {e}", file=sys.stderr)
+
+    if result:
+        print(f"[cogs] ✓ Found via 1688 Keyword Search: {result['cogs_eur']}€", file=sys.stderr)
         json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
         print(file=sys.stdout)
         return
