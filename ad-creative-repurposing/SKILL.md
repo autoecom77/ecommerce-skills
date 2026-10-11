@@ -58,7 +58,7 @@ flowchart TD
     VidDirect --> Manifest
     VidSave --> Manifest
     
-    Manifest["Générer manifest.json"] --> SystemdSync["Sync One-Way rclone vers gdrive:AdCreatives (Service & Timer)"]
+    Manifest["Mise à jour manifest.json (à chaque ad)"] --> SystemdSync["Sync One-Way rclone continue vers gdrive:AdCreatives (&lt; 1s par ad)"]
     SystemdSync --> Done["Rapport Utilisateur Récapitulatif"]
 ```
 
@@ -75,7 +75,7 @@ flowchart TD
 | **4. Branche Image non-FR** | `openrouter_image_translator.py` via OpenRouter Image API | Revue de l'image traduite |
 | **5. Branche Vidéo FR** | Téléchargement brut direct (raw, 0 crédit) | — |
 | **6. Branche Vidéo non-FR** | `vozo_video_translator.py` via Vozo API | Confirmation avant lancement du job payant |
-| **7. Sync Cloud** | `rclone-adcreatives-sync.service` | Notification avec chemins des fichiers générés |
+| **7. Sync Cloud Continue** | `sync_creatives.py` (One-way local vers Drive à chaque étape) | Notification avec chemins des fichiers générés |
 
 ---
 

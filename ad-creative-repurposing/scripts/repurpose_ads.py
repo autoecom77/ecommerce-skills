@@ -216,16 +216,21 @@ def process_product_ads(
 
         manifest["processed_ads"].append(ad_record)
 
-    # Save manifest.json
-    manifest_file = prod_dir / "manifest.json"
-    with open(manifest_file, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
-    print(f"\n📄 Saved manifest: {manifest_file}")
+        # 5. Incremental Persistence: Save manifest and sync to Google Drive after EACH ad
+        manifest_file = prod_dir / "manifest.json"
+        with open(manifest_file, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
 
-    # Trigger one-way rclone sync
+        if not dry_run and not skip_sync:
+            print(f"      ☁️ Persisting Ad #{idx} (Slot AD{slot}) to Google Drive (gdrive:AdCreatives/{p_slug})...")
+            trigger_sync(product_slug=p_slug)
+
+    print(f"\n📄 Saved final manifest: {manifest_file}")
+
+    # Final verification sync
     if not dry_run and not skip_sync:
-        print("\n☁️ Synchronizing AdCreatives to Google Drive...")
-        trigger_sync()
+        print(f"\n☁️ Final one-way synchronization check for {p_slug}...")
+        trigger_sync(product_slug=p_slug)
 
     print(f"\n🎉 Finished processing product: {p_name}\n")
     return manifest
