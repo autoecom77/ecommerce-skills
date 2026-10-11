@@ -166,7 +166,11 @@ def find_currency(page_html: str) -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 
-def find_handle(final_url: str, page_html: str) -> Tuple[Optional[str], Optional[str]]:
+def find_handle(
+    final_url: str,
+    page_html: str,
+    country: str = "FR",
+) -> Tuple[Optional[str], Optional[str]]:
     """Extract product handle from URL or links in page."""
     path = urllib.parse.urlparse(final_url).path
     m = re.search(r"/products/([^/?#]+)", path)
@@ -184,12 +188,33 @@ def find_handle(final_url: str, page_html: str) -> Tuple[Optional[str], Optional
     if counts:
         best = sorted(counts.items(), key=lambda kv: -kv[1])[0][0]
         return best, "link"
+
+    # Search for variant IDs in cart links or Buy Buttons (Shopify advertorial / presell pages)
+    v_ids = re.findall(r"/cart/(\d{10,})", page_html)
+    v_ids += re.findall(r'(?:data-variant-id|name=["\']id["\']\s+value)=["\']?(\d{10,})', page_html)
+    if v_ids:
+        host = urllib.parse.urlparse(final_url).netloc
+        try:
+            _, pjson_raw = fetch_page(
+                f"https://{host}/products.json?limit=250",
+                country,
+                accept="application/json",
+            )
+            pdata = json.loads(pjson_raw)
+            target_ids = {int(vid) for vid in v_ids}
+            for prod in pdata.get("products", []):
+                for v in prod.get("variants", []):
+                    if v.get("id") in target_ids:
+                        return prod.get("handle"), "variant_cart"
+        except Exception:
+            pass
+
     return None, None
 
 
 def extract_og_or_jsonld_price(page_html: str) -> Optional[float]:
-    """Fallback price extraction from OpenGraph or JSON-LD."""
-    # OpenGraph amount
+    """Fallback price extraction from OpenGraph, JSON-LD, Microdata, or clean HTML regex."""
+    # 1. OpenGraph amount
     m = re.search(
         r'property=["\'](?:og|product):price:amount["\']\s+content=["\']([\d.,]+)',
         page_html,
@@ -201,7 +226,17 @@ def extract_og_or_jsonld_price(page_html: str) -> Optional[float]:
         except ValueError:
             pass
 
-    # JSON-LD price
+    # 2. Schema microdata
+    m = re.search(r'itemprop=["\']price["\']\s+content=["\']([\d.,]+)["\']', page_html, re.I)
+    if not m:
+        m = re.search(r'content=["\']([\d.,]+)["\']\s+itemprop=["\']price["\']', page_html, re.I)
+    if m:
+        try:
+            return float(m.group(1).replace(",", "."))
+        except ValueError:
+            pass
+
+    # 3. JSON-LD price
     m = re.search(
         r'"price"\s*:\s*"?([\d]+[.,]?\d*)"?\s*,\s*"priceCurrency"', page_html
     )
@@ -211,13 +246,28 @@ def extract_og_or_jsonld_price(page_html: str) -> Optional[float]:
         except ValueError:
             pass
 
-    # Generic schema price
+    # 4. Generic schema price
     m = re.search(r'"price"\s*:\s*([0-9]+(?:\.[0-9]+)?)', page_html)
     if m:
         try:
             return float(m.group(1))
         except ValueError:
             pass
+
+    # 5. Clean HTML Regex fallback (explicitly avoiding strikethrough/compare/old prices)
+    patterns = [
+        r'data-(?![a-z0-9_-]*(?:compare|old|was|regular|strike|del))[a-z0-9_-]*price=["\']([0-9]+[,\.][0-9]{2})["\']',
+        r'<(?:span|strong|b|p|div)[^>]*class=["\'](?![^"\']*(?:old|compare|was|regular|strike|del|original|crossed|msrp|before))[^"\']*(?:current[-_]?price|sale[-_]?price|special[-_]?price|product[-_]?price|price-new|new[-_]?price|offer[-_]?price)[^"\']*["\'][^>]*>\s*(?:[€$£]?\s*)?([0-9]+[,\.][0-9]{2})',
+    ]
+    for pat in patterns:
+        for match in re.finditer(pat, page_html, re.I):
+            val_str = match.group(1).replace(",", ".")
+            try:
+                v = float(val_str)
+                if 5.0 <= v <= 2000.0:
+                    return v
+            except ValueError:
+                pass
 
     return None
 
@@ -266,7 +316,7 @@ def extract_price_from_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     out["final_url"] = final_url
 
     detected_curr, _ = find_currency(page_html)
-    handle, hsrc = find_handle(final_url, page_html)
+    handle, hsrc = find_handle(final_url, page_html, country)
 
     # 1. Native Shopify JSON endpoint
     if is_shopify and handle:
