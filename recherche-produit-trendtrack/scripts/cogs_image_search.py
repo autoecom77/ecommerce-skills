@@ -31,6 +31,7 @@ Output (JSON to stdout):
 """
 
 import argparse
+import base64
 import json
 import os
 import subprocess
@@ -63,15 +64,32 @@ CONVERSION_RATES = {
 # Apify 1688 Image Search
 # ---------------------------------------------------------------------------
 def load_apify_token() -> Optional[str]:
-    """Load Apify API token from file or environment."""
-    # Check env var first
-    token = os.environ.get("APIFY_TOKEN", "").strip()
+    """Load Apify API token from environment, ~/.hermes/apify_token, or ~/.hermes/.env."""
+    # 1. Check environment variables
+    token = os.environ.get("APIFY_TOKEN", "").strip() or os.environ.get("APIFY_API_TOKEN", "").strip()
     if token:
         return token
 
-    # Check file
+    # 2. Check dedicated token file (~/.hermes/apify_token)
     if APIFY_TOKEN_PATH.exists():
-        return APIFY_TOKEN_PATH.read_text().strip()
+        file_token = APIFY_TOKEN_PATH.read_text().strip()
+        if file_token:
+            return file_token
+
+    # 3. Check ~/.hermes/.env
+    env_file = HERMES_HOME / ".env"
+    if env_file.exists():
+        try:
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if line.startswith("#"):
+                    continue
+                if line.startswith("APIFY_TOKEN=") or line.startswith("APIFY_API_TOKEN="):
+                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if val:
+                        return val
+        except Exception:
+            pass
 
     return None
 
@@ -103,22 +121,43 @@ def download_image_to_temp(image_url: str) -> str:
         tmp.close()
 
 
-def search_apify_1688(image_url: str, apify_token: str, max_results: int = 5) -> Optional[Dict[str, Any]]:
-    """Search 1688 for product matches using Apify Image Search actor.
+def search_apify_1688(
+    image_url: Optional[str] = None,
+    image_path: Optional[str] = None,
+    apify_token: str = "",
+    max_results: int = 5,
+) -> Optional[Dict[str, Any]]:
+    """Search 1688 for product matches using Apify crawleast/1688-image-search-scraper actor.
 
+    Supports image URL or local image path (encoded as base64).
     Returns structured result dict or None if search fails/no results.
     """
-    print("[cogs] Trying Apify 1688 Image Search...", file=sys.stderr)
+    if not image_url and not image_path:
+        return None
 
-    # Apify Actor for 1688 image search
-    # Using the generic "1688 Image Search" actor
-    actor_id = "apify~1688-image-search"  # May need adjustment based on actual actor name
+    print("[cogs] Trying Apify 1688 Image Search (crawleast/1688-image-search-scraper)...", file=sys.stderr)
 
+    actor_id = "crawleast~1688-image-search-scraper"
     api_url = f"https://api.apify.com/v2/acts/{actor_id}/runs"
-    payload = json.dumps({
-        "imageUrls": [image_url],
-        "maxResults": max_results,
-    }).encode()
+
+    payload_data: Dict[str, Any] = {
+        "maxImages": 1,
+        "maxResultsPerImage": max_results,
+        "enrichDetails": False,
+    }
+
+    if image_url:
+        payload_data["imageUrls"] = [image_url]
+    elif image_path:
+        try:
+            with open(image_path, "rb") as f:
+                img_b64 = base64.b64encode(f.read()).decode("utf-8")
+            payload_data["imagesBase64"] = [img_b64]
+        except Exception as e:
+            print(f"[cogs] Failed to read local image for base64: {e}", file=sys.stderr)
+            return None
+
+    payload = json.dumps(payload_data).encode("utf-8")
 
     headers = {
         "Content-Type": "application/json",
@@ -161,47 +200,93 @@ def search_apify_1688(image_url: str, apify_token: str, max_results: int = 5) ->
         print("[cogs] Apify: run did not complete in time", file=sys.stderr)
         return None
 
-    # Fetch results
+    # Fetch results from dataset
     results_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={apify_token}"
     try:
         with urllib.request.urlopen(results_url, timeout=15) as resp:
-            items = json.loads(resp.read().decode())
+            dataset_rows = json.loads(resp.read().decode())
     except Exception as e:
         print(f"[cogs] Apify results fetch failed: {e}", file=sys.stderr)
         return None
 
-    if not items:
+    if not dataset_rows:
+        print("[cogs] Apify: dataset is empty", file=sys.stderr)
+        return None
+
+    # crawleast actor writes imageResult rows with results array
+    raw_items: List[Dict[str, Any]] = []
+    for row in dataset_rows:
+        if isinstance(row, dict):
+            if row.get("type") == "imageResult" and "results" in row:
+                raw_items.extend(row.get("results") or [])
+            elif "results" in row and isinstance(row["results"], list):
+                raw_items.extend(row["results"])
+            else:
+                raw_items.append(row)
+
+    if not raw_items:
         print("[cogs] Apify: no matching products found on 1688", file=sys.stderr)
         return None
 
     # Parse results
     matches = []
-    for item in items[:max_results]:
-        price_cny = item.get("price") or item.get("unitPrice")
-        if isinstance(price_cny, str):
-            try:
-                price_cny = float(price_cny.replace(",", ""))
-            except ValueError:
-                price_cny = None
+    for item in raw_items[:max_results]:
+        # Handle various price fields from crawleast actor
+        price_cny = None
+        for key in ["priceYuan", "consignPriceYuan", "price", "unitPrice"]:
+            val = item.get(key)
+            if val is not None:
+                if isinstance(val, (int, float)):
+                    price_cny = float(val)
+                    break
+                elif isinstance(val, dict):
+                    # Enriched detail price dict: {"min": 1.9, "max": 2.2, ...}
+                    min_p = val.get("min") or val.get("price")
+                    if min_p is not None:
+                        try:
+                            price_cny = float(min_p)
+                            break
+                        except (ValueError, TypeError):
+                            pass
+                elif isinstance(val, str):
+                    try:
+                        price_cny = float(val.replace(",", "").replace("¥", "").strip())
+                        break
+                    except ValueError:
+                        pass
 
-        price_eur = round(price_cny * CONVERSION_RATES["CNY"], 2) if price_cny else None
+        price_eur = round(price_cny * CONVERSION_RATES["CNY"], 2) if price_cny is not None else None
+
+        detail_url = item.get("detailUrl") or item.get("url") or ""
+        title = item.get("title") or item.get("titleEn") or item.get("titleCn") or item.get("name") or ""
+        img_url = item.get("imageUrl") or item.get("image") or ""
+        moq = item.get("moq") or item.get("minOrder") or ""
+
+        supplier_info = item.get("supplier")
+        supplier_name = ""
+        if isinstance(supplier_info, dict):
+            supplier_name = supplier_info.get("name") or supplier_info.get("companyName") or ""
+        elif isinstance(supplier_info, str):
+            supplier_name = supplier_info
 
         matches.append({
-            "url": item.get("url") or item.get("detailUrl") or "",
+            "url": detail_url,
             "price_cny": price_cny,
             "price_eur": price_eur,
-            "title": item.get("title") or item.get("name") or "",
-            "image_url": item.get("imageUrl") or item.get("image") or "",
-            "min_order": item.get("minOrder") or item.get("moq") or "",
+            "title": title,
+            "image_url": img_url,
+            "min_order": moq,
+            "supplier": supplier_name,
         })
 
     # Sort by price ascending (cheapest unit price)
     matches.sort(key=lambda x: x["price_eur"] if x["price_eur"] is not None else 999999)
 
-    if not matches or matches[0]["price_eur"] is None:
+    valid_matches = [m for m in matches if m["price_eur"] is not None]
+    if not valid_matches:
         return None
 
-    best = matches[0]
+    best = valid_matches[0]
     return {
         "method": "apify_1688",
         "source": "1688",
@@ -209,7 +294,7 @@ def search_apify_1688(image_url: str, apify_token: str, max_results: int = 5) ->
         "cogs_original": best["price_cny"],
         "cogs_currency": "CNY",
         "product_url": best["url"],
-        "confidence": "high" if len(matches) >= 3 else "medium",
+        "confidence": "high" if len(valid_matches) >= 3 else "medium",
         "matches": matches,
     }
 
@@ -367,9 +452,13 @@ def main():
     result = None
 
     # ---- Method 1: Apify 1688 Image Search ----
-    if apify_token and is_url:
+    if apify_token and (args.image_url or args.image_path):
         try:
-            result = search_apify_1688(args.image_url, apify_token)
+            result = search_apify_1688(
+                image_url=args.image_url,
+                image_path=args.image_path,
+                apify_token=apify_token,
+            )
         except Exception as e:
             print(f"[cogs] Apify error: {e}", file=sys.stderr)
 
