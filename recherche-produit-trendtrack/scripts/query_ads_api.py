@@ -161,11 +161,16 @@ def build_queries(ref_date: datetime, limit: int = 100) -> List[Dict[str, Any]]:
     method2 = {
         "_tag": "volume_live",
         # Exclure les pays: Inde, Pakistan, US
-        "creationCountry": {"exclude": ["IN", "PK", "US"]},
+        # (2026-10-10) creationCountry, adCountries.exclude and market are all rejected
+        # by the maintained ads-search backend (HTTP 400 "not representable").
+        # Server-side we keep EU/UK-distributed ads only (hideNonEuUkAds); IN/PK/US
+        # creation/main country is dropped client-side in extract_ad_fields().
+        "hideNonEuUkAds": True,
         # Last 30 days
         "createdAfter": j_30,
-        # Live ads: 50 ads last 24 hours
-        "minActiveAds": 50,
+        # Live ads: 50 ads last 24 hours — public field is minAds; adsTimePeriod
+        # selects its metric window (minActiveAds does not exist in the contract).
+        "minAds": 50,
         "adsTimePeriod": "last24h",
         "status": "active",
         "limit": limit,

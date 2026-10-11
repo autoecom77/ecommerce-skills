@@ -1,105 +1,125 @@
 ---
 name: ad-creative-repurposing
-description: "Use when fetching and transforming a competitor's ad video."
-version: 1.0.0
+description: "Autonomous ad creative repurposing, localization, and decision-tree pipeline for competitor ads."
+version: 2.0.0
 author: Hermes Agent
 license: MIT
 platforms: [linux]
 metadata:
   hermes:
-    tags: [Ads, Creative, Video, FFmpeg, TrendTrack, Facebook]
-    related_skills: [recherche-produit-trendtrack]
+    tags: [ecommerce, ads, creative, video, image, localization, vozo, nous, decision-tree]
+    related_skills: [recherche-produit-trendtrack, creation-produit-shopify, vozo-translate-dub]
 ---
 
-# Ad creative: retrieve and transform
+# Ad Creative Repurposing & Localization Pipeline
 
-Get a competitor's ad video as a file, then produce a modified copy in one
-ffmpeg pass. Used when a creative found during product research needs to be
-saved or reworked.
+Pipeline autonome de transformation et localisation des créatives publicitaires concurrentes (Images et Vidéos) pour le marché français e-commerce.
 
-## Procedure
+Traite les produits du Google Sheet **« Tableau de Recherche Produit »** dont la case **Validation / Lancement** est cochée, extrait les $X$ premières publicités actives, et applique un arbre de décision déterministe avec synchronisation Google Drive.
 
-### 1. Locate the ad where the video is actually downloadable
+---
 
-A TrendTrack share link (`app.trendtrack.io/share/ads/...`) is a viewer, not
-a file endpoint — fetching it directly returns an API error, so don't burn
-time trying to turn it into a download URL. Find the same ad in the
-**Facebook Ad Library** instead: its page source exposes the creative as a
-direct `.mp4` on the Facebook CDN (`video-yyz1-1.xx.fbcdn.net` or a sibling
-`*.fbcdn.net` host).
+## Arbre de Décision (Decision Tree Architecture)
 
-### 2. Pull the CDN URL out of the DOM, then download
-
-```python
-# inside browser_exec, after the player has loaded
-code = """(() => {
-  const v = document.querySelector('video');
-  return v ? (v.currentSrc || v.src) : null;
-})()"""
+```mermaid
+flowchart TD
+    Start["Étape 0: Lecture du Sheet (sheet_rows.py)"] --> CheckTicked{"Ligne cochée (TRUE)?"}
+    CheckTicked -->|Non| Refuse["Refuser / Demander de cocher"]
+    CheckTicked -->|Oui (Multiples)| AskUser["Demander à l'utilisateur quel produit traiter"]
+    CheckTicked -->|Oui (Unique)| Confirm["Confirmer nom + URL produit"]
+    
+    AskUser --> ExtractAds["Extraire les 3 premières Ads (AD1, AD2, AD3)"]
+    Confirm --> ExtractAds
+    
+    ExtractAds --> LoopAds["Pour chaque Ad (1 à 3)"]
+    
+    LoopAds --> FetchMedia["Résolution Média (0 crédit: medias.trendtrack.io / Chrome CDP :9222)"]
+    FetchMedia --> TypeCheck{"Type de Média?"}
+    
+    %% Branche Image
+    TypeCheck -->|Image| ImgText{"Texte détecté?"}
+    ImgText -->|Aucun texte| ImgDirect["Téléchargement Direct (Raw)<br/>/home/ubuntu/AdCreatives/&lt;produit&gt;/ad_N_raw.jpg"]
+    ImgText -->|Texte présent| ImgLang{"Langue du texte = Français?<br/>(detector.py: Gemini 3.8 Flash)"}
+    ImgLang -->|Oui (FR)| ImgDirect
+    ImgLang -->|Non (Autre)| ORGen["OpenRouter Image Translation<br/>(seedream-5-0-flash / Prompt FR guidé)"]
+    ORGen --> ImgSave["Sauvegarder Image Traduite<br/>/home/ubuntu/AdCreatives/&lt;produit&gt;/ad_N_translated_fr.png"]
+    
+    %% Branche Vidéo (Vozo - 100% Intacte)
+    TypeCheck -->|Vidéo| VidAudio["Analyse Audio Locale (faster-whisper 0 crédit)"]
+    VidAudio --> VidLang{"Audio en Français?"}
+    VidLang -->|Oui (FR)| VidDirect["Garder Raw Tel Quel (0 crédit)<br/>/home/ubuntu/AdCreatives/&lt;produit&gt;/ad_N_raw.mp4"]
+    VidLang -->|Non (Autre)| VozoJob["Pipeline Vozo Translate & Dub<br/>• Doublage FR clonage voix<br/>• Alignement vidéo-audio auto<br/>• Remplacement sous-titres FR"]
+    VozoJob --> VozoPoll["Attente fin du job & Téléchargement MP4 + SRT"]
+    VozoPoll --> VidSave["Sauvegarder Vidéo Localisée<br/>/home/ubuntu/AdCreatives/&lt;produit&gt;/ad_N_dubbed_fr.mp4"]
+    
+    %% Clôture & Sync
+    ImgDirect --> Manifest
+    ImgSave --> Manifest
+    VidDirect --> Manifest
+    VidSave --> Manifest
+    
+    Manifest["Générer manifest.json"] --> SystemdSync["Sync One-Way rclone vers gdrive:AdCreatives (Service & Timer)"]
+    SystemdSync --> Done["Rapport Utilisateur Récapitulatif"]
 ```
 
-Then fetch that URL with `curl -L -o out.mp4 '<url>'`. Query all `video`
-elements, not just the first — Ad Library pages often hold a thumbnail
-preview video ahead of the real creative. Wait for load before reading
-`currentSrc`; an early query returns an empty string while the source is
-still resolving.
+---
 
-### 3. Transform in a single pass
+## Contrat Opérationnel (Scripté vs Interactif)
 
-Order is load-bearing: upscale first (later filters resample the upscaled
-frame rather than interpolating a small one), mirror second, colour grade
-last.
+| Étape | Scripté | Interactif |
+|---|---|---|
+| **0. Lecture Sheet** | `sheet_rows.py` | Sélection de la ligne si plusieurs cochées + confirmation nom/URL |
+| **1. Extraction Ads** | `ad_resolver.py` | Validation des ads trouvées (AD1..AD3) |
+| **2. Détection Type & Langue** | `detector.py` (MIME + whisper + Gemini 3.8 Flash) | Arbitrage si ambigu |
+| **3. Branche Image FR / Sans texte** | Téléchargement direct raw (0 crédit) | — |
+| **4. Branche Image non-FR** | `openrouter_image_translator.py` via OpenRouter Image API | Revue de l'image traduite |
+| **5. Branche Vidéo FR** | Téléchargement brut direct (raw, 0 crédit) | — |
+| **6. Branche Vidéo non-FR** | `vozo_video_translator.py` via Vozo API | Confirmation avant lancement du job payant |
+| **7. Sync Cloud** | `rclone-adcreatives-sync.service` | Notification avec chemins des fichiers générés |
+
+---
+
+## Procédure d'Exécution Standard
+
+### Étape 0 — Lire le Sheet
 
 ```bash
-ffmpeg -i in.mp4 \
-  -vf "scale=iw*2:ih*2,hflip,eq=brightness=-0.15:contrast=0.9:saturation=0.85" \
-  -c:v libx264 -crf 18 -preset slow -c:a copy out.mp4
+python3 ~/.hermes/skills/ecommerce/ad-creative-repurposing/scripts/sheet_rows.py
 ```
 
-`-c:a copy` leaves audio untouched, which also keeps the pass fast.
+- Si plusieurs lignes cochées : **demander immédiatement à l'utilisateur laquelle traiter** (liste avec `row`, `name`, `url`).
+- Si une seule ligne cochée : confirmer le nom et l'URL avant de lancer.
+- **Refuser formellement** de traiter une ligne non cochée (`Validation / Lancement != TRUE`).
 
-### 4. Verify the output, don't assume it
+### Étape 1 — Lancer le Pipeline d'Arbre de Décision
 
 ```bash
-ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 out.mp4
+python3 ~/.hermes/skills/ecommerce/ad-creative-repurposing/scripts/repurpose_ads.py \
+  --row <ROW_NUMBER> \
+  --max-ads 3 \
+  --output-dir /home/ubuntu/AdCreatives
 ```
 
-Expected: exactly 2× the input's width and height.
+*(En mode test/inspection sans consommer de crédits de traduction, ajouter `--dry-run`).*
 
-### 5. Localize for the French Market (Vozo Translate & Dub)
+---
 
-When the repurposed creative must be adapted for the French dropshipping market, run the standardized Vozo localization pipeline immediately:
+## Gestion des Données & Cloud Sync
 
-```bash
-vozo-cli project translate_dub create \
-  --from-file out.mp4 \
-  --target-language fr \
-  --original-language auto \
-  --dub-preference auto \
-  --speaker-number Auto \
-  --enable-subtitles \
-  --remove-original-subtitle \
-  --auto-align-video
+### Stockage Local
+Tous les actifs sont stockés dans des dossiers dédiés par produit sur le serveur :
+```text
+/home/ubuntu/AdCreatives/<product_slug>/
+├── manifest.json
+├── ad_1_raw.mp4               # (si vidéo déjà en français)
+├── ad_2_dubbed_fr.mp4         # (si vidéo traduite via Vozo)
+├── ad_2_subtitles_fr.srt
+├── ad_3_translated_fr.png     # (si image traduite via OpenRouter Image API)
+└── ad_3_source.jpg            # (image originale source)
 ```
 
-Then download the resulting dubbed video:
-```bash
-vozo-cli project translate_dub download <project_id> --artifact dubbed_video --output ./localized_ads/
-```
-
-## Pitfalls
-
-- **`scale=iw*2:iw*2` squares the frame.** Both dimensions read `iw`, so a
-  640×360 source comes out 1280×1280 — visibly stretched, and easy to miss
-  because ffmpeg exits 0. Height must read `ih` (`scale=iw*2:ih*2`).
-- **To hit a target width instead of a fixed 2×**, use
-  `scale=1920:-2` — the `-2` keeps the aspect ratio and forces an even
-  height, which the H.264 encoder requires (a bare `-1` can emit an odd
-  height and fail).
-- **Chaining filters in one `-vf` avoids generation loss** — separate
-  ffmpeg passes re-encode at every step. Mirror and grade belong in the
-  same command as the scale.
-- **Confirm which file you transformed.** Ad Library pages serve several
-  videos per ad (static preview, thumbnail loop, the creative); check the
-  duration of the URL you grabbed before downloading a 3-second bumper by
-  mistake.
+### Synchronisation Google Drive
+Le dossier `/home/ubuntu/AdCreatives` est synchronisé en miroir unidirectionnel vers Google Drive (`gdrive:AdCreatives`).
+- **Service systemd utilisateur** : `rclone-adcreatives-sync.service`
+- **Timer quotidien** : `rclone-adcreatives-sync.timer` (tous les jours à 04:00)
+- **Déclenchement immédiat** : Automatiquement exécuté à la fin de `repurpose_ads.py`.
