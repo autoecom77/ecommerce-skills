@@ -33,6 +33,7 @@ from ad_resolver import resolve_and_download
 from detector import analyze_asset
 from openrouter_image_translator import translate_image_openrouter, DEFAULT_IMAGE_MODEL
 from vozo_video_translator import translate_video_vozo
+from video_postprocessor import apply_video_night_filter, DEFAULT_COLOR_TEMP
 from sync_creatives import trigger_sync
 
 
@@ -52,6 +53,7 @@ def process_product_ads(
     skip_sync: bool = False,
     ad_slots: list = None,
     image_model: str = DEFAULT_IMAGE_MODEL,
+    video_color_temp: int = DEFAULT_COLOR_TEMP,
 ) -> Dict[str, Any]:
     """ad_slots: optional explicit list of AD slot numbers (e.g. [3]) to process
     exclusively, instead of the first max_ads slots."""
@@ -141,9 +143,34 @@ def process_product_ads(
                     raw_dest = prod_dir / f"ad_{slot}_raw.mp4"
                     shutil.copy2(source_file, raw_dest)
                     ad_record["action"] = "direct_download_raw"
-                    ad_record["output_video"] = str(raw_dest)
+                    ad_record["raw_video"] = str(raw_dest)
                     ad_record["reason"] = "Audio already in French (preserved raw, 0 credits)"
                     print(f"      ✅ Audio is in French! Preserved raw: {raw_dest.name}")
+
+                    # Final FFmpeg Post-Processing: Night filter (anti-blue)
+                    repurposed_dest = prod_dir / f"ad_{slot}_repurposed.mp4"
+                    if dry_run:
+                        ad_record["output_video"] = str(repurposed_dest)
+                        ad_record["postprocess"] = {
+                            "filter": "colortemperature",
+                            "temperature": video_color_temp,
+                            "status": "dry_run_skipped",
+                        }
+                        print(f"      ⚠️ Dry Run: Would apply FFmpeg night filter ({video_color_temp}K)")
+                    else:
+                        print(f"      🌙 Applying FFmpeg night filter ({video_color_temp}K)...")
+                        apply_video_night_filter(
+                            input_video=raw_dest,
+                            output_video=repurposed_dest,
+                            color_temp=video_color_temp,
+                        )
+                        ad_record["output_video"] = str(repurposed_dest)
+                        ad_record["postprocess"] = {
+                            "filter": "colortemperature",
+                            "temperature": video_color_temp,
+                            "status": "completed",
+                        }
+                        print(f"      ✅ Final repurposed creative ready: {repurposed_dest.name}")
                 else:
                     # Non-French Video: Vozo pipeline
                     ad_record["action"] = "vozo_dub_and_subtitles"
@@ -161,6 +188,41 @@ def process_product_ads(
                         )
                         ad_record["vozo_result"] = vozo_res
                         print(f"      ✅ Vozo localization completed successfully!")
+
+                        # Locate the dubbed video from vozo output
+                        dubbed_video_path = None
+                        if isinstance(vozo_res, dict):
+                            local_files = vozo_res.get("local_files") or {}
+                            if "video" in local_files:
+                                candidate_p = Path(local_files["video"])
+                                if candidate_p.is_file():
+                                    dubbed_video_path = candidate_p
+                        if not dubbed_video_path:
+                            candidate1 = prod_dir / f"ad_{slot}_dubbed_fr_translated.mp4"
+                            candidate2 = prod_dir / f"ad_{slot}_dubbed_fr.mp4"
+                            if candidate1.is_file():
+                                dubbed_video_path = candidate1
+                            elif candidate2.is_file():
+                                dubbed_video_path = candidate2
+
+                        if dubbed_video_path and dubbed_video_path.is_file():
+                            ad_record["dubbed_video"] = str(dubbed_video_path)
+                            repurposed_dest = prod_dir / f"ad_{slot}_repurposed.mp4"
+                            print(f"      🌙 Applying FFmpeg night filter ({video_color_temp}K)...")
+                            apply_video_night_filter(
+                                input_video=dubbed_video_path,
+                                output_video=repurposed_dest,
+                                color_temp=video_color_temp,
+                            )
+                            ad_record["output_video"] = str(repurposed_dest)
+                            ad_record["postprocess"] = {
+                                "filter": "colortemperature",
+                                "temperature": video_color_temp,
+                                "status": "completed",
+                            }
+                            print(f"      ✅ Final repurposed creative ready: {repurposed_dest.name}")
+                        else:
+                            print(f"      [Warning] Dubbed video file not found for post-processing.")
 
             elif m_type == "image":
                 has_txt = analysis.get("has_text", False)
@@ -268,6 +330,10 @@ def main() -> None:
         "--skip-sync", action="store_true",
         help="Skip triggering rclone cloud synchronization"
     )
+    parser.add_argument(
+        "--video-color-temp", type=int, default=DEFAULT_COLOR_TEMP,
+        help=f"Color temperature in Kelvin for FFmpeg night filter on video ads (default: {DEFAULT_COLOR_TEMP})"
+    )
 
     args = parser.parse_args()
 
@@ -280,6 +346,7 @@ def main() -> None:
             skip_sync=args.skip_sync,
             ad_slots=args.ads,
             image_model=args.image_model,
+            video_color_temp=args.video_color_temp,
         )
         print(json.dumps(manifest, indent=2, ensure_ascii=False))
     except Exception as e:

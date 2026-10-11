@@ -44,19 +44,22 @@ flowchart TD
     ImgLang -->|Non (Autre)| ORGen["OpenRouter Image Translation<br/>(seedream-5-0-flash / Prompt FR guidé)"]
     ORGen --> ImgSave["Sauvegarder Image Traduite<br/>/home/ubuntu/AdCreatives/&lt;produit&gt;/ad_N_translated_fr.png"]
     
-    %% Branche Vidéo (Vozo - 100% Intacte)
+    %% Branche Vidéo
     TypeCheck -->|Vidéo| VidAudio["Analyse Audio Locale (faster-whisper 0 crédit)"]
     VidAudio --> VidLang{"Audio en Français?"}
-    VidLang -->|Oui (FR)| VidDirect["Garder Raw Tel Quel (0 crédit)<br/>/home/ubuntu/AdCreatives/&lt;produit&gt;/ad_N_raw.mp4"]
+    VidLang -->|Oui (FR)| VidDirect["Garder Raw (0 crédit)<br/>/home/ubuntu/AdCreatives/&lt;produit&gt;/ad_N_raw.mp4"]
     VidLang -->|Non (Autre)| VozoJob["Pipeline Vozo Translate & Dub<br/>• Doublage FR clonage voix<br/>• Alignement vidéo-audio auto<br/>• Remplacement sous-titres FR"]
     VozoJob --> VozoPoll["Attente fin du job & Téléchargement MP4 + SRT"]
-    VozoPoll --> VidSave["Sauvegarder Vidéo Localisée<br/>/home/ubuntu/AdCreatives/&lt;produit&gt;/ad_N_dubbed_fr.mp4"]
+    VozoPoll --> VidSave["Sauvegarder Master Doublé<br/>/home/ubuntu/AdCreatives/&lt;produit&gt;/ad_N_dubbed_fr.mp4"]
     
+    VidDirect --> VidFilter["Dernière Étape Obligatoire FFmpeg (video_postprocessor.py)<br/>• Filtre de Nuit Anti-Bleu (colortemperature=5500:pl=1)<br/>• H.264 (yuv420p) + faststart"]
+    VidSave --> VidFilter
+    VidFilter --> VidRepurposed["Créative Finale Prête<br/>/home/ubuntu/AdCreatives/&lt;produit&gt;/ad_N_repurposed.mp4"]
+
     %% Clôture & Sync
     ImgDirect --> Manifest
     ImgSave --> Manifest
-    VidDirect --> Manifest
-    VidSave --> Manifest
+    VidRepurposed --> Manifest
     
     Manifest["Mise à jour manifest.json (à chaque ad)"] --> SystemdSync["Sync One-Way rclone continue vers gdrive:AdCreatives (&lt; 1s par ad)"]
     SystemdSync --> Done["Rapport Utilisateur Récapitulatif"]
@@ -111,9 +114,12 @@ Tous les actifs sont stockés dans des dossiers dédiés par produit sur le serv
 ```text
 /home/ubuntu/AdCreatives/<product_slug>/
 ├── manifest.json
-├── ad_1_raw.mp4               # (si vidéo déjà en français)
-├── ad_2_dubbed_fr.mp4         # (si vidéo traduite via Vozo)
-├── ad_2_subtitles_fr.srt
+├── ad_1_source.mp4            # (vidéo originale source téléchargée)
+├── ad_1_raw.mp4               # (copie raw si vidéo déjà en français)
+├── ad_1_repurposed.mp4        # (créative finale avec filtre de nuit 5500K)
+├── ad_2_dubbed_fr.mp4         # (master doublé et synchronisé si vidéo traduite via Vozo)
+├── ad_2_subtitles_fr.srt      # (sous-titres français exportés par Vozo)
+├── ad_2_repurposed.mp4        # (créative finale avec filtre de nuit 5500K)
 ├── ad_3_translated_fr.png     # (si image traduite via OpenRouter Image API)
 └── ad_3_source.jpg            # (image originale source)
 ```
