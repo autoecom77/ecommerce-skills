@@ -1,7 +1,7 @@
 ---
 name: recherche-produit-trendtrack
 description: "Runs the TrendTrack product research: ads → COGS → Sheet."
-version: 2.3.0
+version: 2.4.0
 ---
 
 # Recherche Produit TrendTrack
@@ -15,8 +15,12 @@ Pour lancer le pipeline complet de bout en bout de façon 100% autonome et déte
 ```bash
 cd ~/.hermes/skills/ecommerce/recherche-produit-trendtrack
 python3 scripts/run_pipeline.py
-# Options disponibles : --pages <N> (défaut 5), --dry-run (simulation sans écriture), --date YYYY-MM-DD
+# Options : --pages <N> (défaut 5), --dry-run (simulation sans écriture), --date YYYY-MM-DD,
+#           --credit-cap 1200, --search-budget 850, --cogs-workers 4,
+#           --resume-from search|prices|cogs (reprise après crash/arrêt SANS relancer la recherche payée)
 ```
+
+stdout = résumé JSON final (entonnoir, crédits, top 3, quasi-misses), aussi écrit dans `/tmp/tt_run/run_summary.json` ; logs sur stderr. Le run complet prend ~15–30 min (COGS) : en cron, le lancer avec `terminal(background=true)` puis `process(wait)` en boucle.
 
 ---
 
@@ -54,10 +58,11 @@ python3 scripts/run_pipeline.py
    ```
 
 ### Étape 1 — Recherche batch (`query_ads_api.py`)
-Interroge les 2 méthodes de recherche TrendTrack (Shopify reach growth, volume d'ads live) sur 5 pages (100 ads/page, reach max 10M) :
+Interroge les 2 méthodes de recherche TrendTrack (Shopify reach growth, volume d'ads live) jusqu'à 5 pages chacune (100 ads/page, reach max 10M), **en round-robin (M1 p1, M2 p1, M1 p2…) et sous budget crédits** (`--max-credits`, coût lu dans l'en-tête `X-Usage-Cost`) :
 ```bash
-python3 scripts/query_ads_api.py --date $(date +%F) --pages 5 > /tmp/tt_candidates_raw.json
+python3 scripts/query_ads_api.py --date $(date +%F) --pages 5 --max-credits 850 > /tmp/tt_candidates_raw.json
 ```
+Coût réel mesuré : **~1,5 crédit par ad renvoyée = ~150 crédits par page de 100** (et non 30/appel). 5 pages × 2 méthodes coûteraient ~1 500 crédits > plafond : avec le budget par défaut de 850, on obtient ~M1 3 pages + M2 2 pages (750 crédits), le reste du plafond allant à l'enrichissement. Stats par méthode → `/tmp/tt_query_stats.json`.
 
 ### Étape 1.5 — Déduplication Sheet (`pre_filter.py`)
 Élimine les boutiques déjà enregistrées dans le Google Sheet par domaine :
@@ -66,7 +71,7 @@ python3 scripts/pre_filter.py --candidates /tmp/tt_candidates_raw.json --sheet-d
 ```
 
 ### Étape 2 — Prix de vente & Pré-filtrage prix
-1. Extraction multithreadée du prix de vente (EUR) depuis les landing pages :
+1. Extraction multithreadée (6 threads) du prix de vente (EUR) depuis les landing pages. Les boutiques Shopify répondent **429/430 par boutique et par IP** après une rafale : retry avec backoff, puis erreur explicite `HTTP 429 rate limited`. **Ne jamais relancer l'extraction sur les mêmes ~350 boutiques dans l'heure** (2e passe = 40/355 prix au lieu de 98/355) — reprendre avec `--resume-from cogs`. Un `"price":4500` entier ≥ 100 dans le JSON inline d'une page Shopify = **centimes** (45,00 €) ; un entier < 100 reste en euros.
    ```bash
    python3 scripts/extract_prices.py --input /tmp/tt_candidates_filtered.json --output /tmp/tt_candidates_with_prices.json
    ```
@@ -79,11 +84,13 @@ python3 scripts/pre_filter.py --candidates /tmp/tt_candidates_raw.json --sheet-d
    ```
 
 ### Étape 3 — Recherche COGS en Cascade 3 Niveaux & Ratio $X$
-Pour chaque candidat retenu, le coût de fabrication (COGS) est recherché selon l'ordre strict :
+Pour chaque candidat avec prix (≥ 30 € ; les candidats sans prix sont ignorés), 4 recherches en parallèle (Apify gratuit = 5 runs simultanés max), timeout 420 s par candidat (process group tué au timeout). Le COGS est recherché selon l'ordre strict :
 1. **Niveau 1** : 1688 via Apify Image Search (`crawleast/1688-image-search-scraper`).
 2. **Niveau 2** : AliExpress Reverse Image Search via navigateur (`aliexpress_image_search.py`).
 3. **Niveau 3** : 1688 Recherche textuelle par mots-clés (`crawleast/1688-product-scraper`).
 4. **Niveau 4 (Fallback)** : Calcul heuristique : $COGS = Prix \div Diviseur$ (Cosmétique 6.5, Maison/Cuisine 5, Apparel 6, Sport/Outdoor 5, Santé 6.5, Puériculture 6, défaut 5.5).
+
+Chaque niveau prend la **médiane** des matches (pas le moins cher : le moins cher est souvent une pièce/échantillon à ¥1 — ex. 0,11 € pour un vélo à 1 999 €) et est **rejeté si Prix/COGS > 30** (max historique du Sheet : 28,3) → niveau suivant. `cogs_image_search.py --price-eur <prix>` active ce contrôle ; la raison des rejets est conservée (`cogs_attempts`) et visible dans la note COGS.
 
 Validation mathématique finale du coefficient ($X = Prix \div COGS$) :
 ```bash
@@ -98,7 +105,7 @@ Règles strictes :
 - Prix > 40 € $\rightarrow$ $X \ge 3{,}5$ requis
 
 ### Étape 4 — Enrichissement TrendTrack (`enrich_api.py`)
-Récupère les 8 top ads de chaque boutique retenue au format explorer workspace `ju-2` :
+Récupère les 8 top ads (`--limit 8`, facturé par ad renvoyée, ~12 crédits max/boutique) de chaque boutique retenue au format explorer workspace `ju-2`, dans la limite du budget restant (`--max-credits` = plafond − crédits déjà consommés) ; au-delà, seule l'ad source est listée :
 ```bash
 python3 scripts/enrich_api.py --candidates /tmp/tt_candidates_kept.json > /tmp/tt_enriched.json
 ```
@@ -124,7 +131,7 @@ python3 scripts/write_sheet.py --rows /tmp/tt_run/rows.json --result-out /tmp/tt
 ```
 
 ### Étape 7 — Rapport Email (`send_recap.py`)
-Compile l'entonnoir complet et envoie l'email récapitulatif :
+Compile l'entonnoir complet (recherche par méthode → boutiques uniques → dédup Sheet → prix extraits → prix ≥ 30 € → COGS par source → X validé → ajoutés), les crédits (recherche / enrichissement / solde), les quasi-misses et le top 3, puis envoie l'email récapitulatif (`compute_funnel()` est réutilisé par `run_pipeline.py` pour le résumé JSON) :
 ```bash
 python3 scripts/send_recap.py --send --date $(date +%d/%m/%Y)
 ```
@@ -133,5 +140,16 @@ python3 scripts/send_recap.py --send --date $(date +%d/%m/%Y)
 
 ## Règles Opérationnelles
 
-- Crédits TrendTrack : cible moyenne $\le 650$ crédits/run, plafond dur 1 200. Si solde initial < 300 crédits, stopper le run.
+- Crédits TrendTrack : cible moyenne $\le 650$ crédits/run, plafond dur 1 200 (appliqué par `run_pipeline.py` : budget recherche 850 + enrichissement sur le reste). Si solde initial < 300 crédits, stopper le run. Un run par défaut consomme ~1 000–1 150 crédits : pour viser 650, baisser `--search-budget` (~450 = 3 pages).
 - Colonnes `Validation / Lancement`, `Kalodata`, `Score /100`, `Concurrent 1`, `Concurrent 2` restent vides.
+- Colonne D (Pays) = nom français du pays principal de l'ad (DE → Allemagne…), colonne BT = `M1 reach growth` / `M2 volume live` / `M1+M2` + note COGS.
+
+## Pièges (leçons du run du 13/10/2026)
+
+- `python3` = venv Hermes **3.11** (le Python système est 3.14) : les annotations sont évaluées à la définition, un nom indéfini dans une annotation (`-> Tuple_rows`) plante le script en 3.11 alors qu'un test en 3.14 passe. Tester avec `python3` (3.11).
+- Toujours relire `extract_ad_fields()` après modification : un `ad_id` non défini faisait échouer chaque page (exception attrapée → 0 candidat mais crédits facturés).
+- Avant un vrai run après modification du code : test à ~3 crédits `query_ads_api.py --method 1 --pages 1 --limit 2 --max-credits 4` + `--dry-run` du pipeline.
+- Si le run est interrompu après la recherche, **ne pas relancer de zéro** (re-facturation ~750 crédits) : `run_pipeline.py --resume-from cogs` (ou `prices` si l'extraction des prix doit être refaite — attention aux 429). Les artefacts du run précédent sont archivés dans `/tmp/tt_run/archive_*`.
+- M2 (volume_live) remonte beaucoup de grandes marques (EcoFlow, Calvin Klein, La Prairie…) et de pages non-produit : la majorité tombe faute de prix ; celles qui ont un prix passent souvent avec un COGS heuristique (X = 5,5) — à relire dans le Sheet.
+- **Apify gratuit = 5 runs simultanés.** Un run qu'on arrête de poller continue (timeouts acteurs 2 400 s / 3 600 s) et bloque un slot → tous les runs suivants prennent **HTTP 402** et la cascade COGS tombe en heuristique en ~9 s par produit. Les runs sont maintenant lancés avec `?timeout=&memory=1024` et abortés quand le polling abandonne. Si des 402 réapparaissent : `GET https://api.apify.com/v2/actor-runs?status=RUNNING` puis `POST /v2/actor-runs/<id>/abort` sur chacun, puis `--resume-from cogs`.
+- Une série de COGS « no match » sur les 3 niveaux en < 15 s = panne d'infra (402, AliExpress « image search button » introuvable), pas des produits introuvables : vérifier `cogs_attempts` avant d'écrire dans le Sheet.

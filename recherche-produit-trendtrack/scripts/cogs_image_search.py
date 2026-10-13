@@ -38,10 +38,11 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.error
 import urllib.parse
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -58,6 +59,89 @@ CONVERSION_RATES = {
     "EUR": 1.0,
     "GBP": 1.16,
 }
+
+# Reject an estimate when Prix / COGS exceeds this: such a hit is almost surely a spare
+# part, a sample or a ¥1 accessory listing, not the product (2026-10-13 run: 0.11 € for a
+# 1 999 € e-bike, 0.13 € for a 30.99 € advent calendar). Highest X among the curated
+# Sheet rows is 28.3.
+MAX_PLAUSIBLE_X = 30.0
+
+# Apify run lifecycle. Runs are started with ?timeout=&memory= so they stop by themselves:
+# a run we stop polling otherwise keeps running (actor defaults: 2400 s / 3600 s) and holds
+# one of the 5 concurrent-run slots of the free plan → every new run gets HTTP 402.
+APIFY_IMAGE_RUN_TIMEOUT_S = 100
+APIFY_KEYWORD_RUN_TIMEOUT_S = 75
+LAST_ERROR: Dict[str, str] = {}  # method -> last infrastructure error (shown in attempts)
+
+
+def _start_apify_run(api_url: str, payload: bytes, headers: Dict[str, str], label: str) -> Optional[Dict[str, Any]]:
+    """POST an actor run; one retry after 20 s on HTTP 402 (concurrent-run limit)."""
+    for attempt in range(2):
+        req = urllib.request.Request(api_url, data=payload, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code == 402 and attempt == 0:
+                print(f"[cogs] {label}: Apify HTTP 402 (concurrent-run/credit limit) — retry in 20s", file=sys.stderr)
+                time.sleep(20)
+                continue
+            LAST_ERROR[label] = f"Apify HTTP {e.code}"
+            print(f"[cogs] {label} run start failed: HTTP {e.code}", file=sys.stderr)
+            return None
+        except Exception as e:
+            LAST_ERROR[label] = f"Apify start error: {str(e)[:60]}"
+            print(f"[cogs] {label} run start failed: {e}", file=sys.stderr)
+            return None
+    return None
+
+
+def _abort_apify_run(run_id: str, apify_token: str) -> None:
+    """Free the concurrent-run slot of a run we stopped waiting for."""
+    try:
+        req = urllib.request.Request(f"https://api.apify.com/v2/actor-runs/{run_id}/abort",
+                                     headers={"Authorization": f"Bearer {apify_token}"}, method="POST")
+        urllib.request.urlopen(req, timeout=15).read()
+    except Exception:
+        pass
+
+
+def _median(vals: List[float]) -> Optional[float]:
+    s = sorted(vals)
+    n = len(s)
+    if not n:
+        return None
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+def robust_estimate(
+    result: Optional[Dict[str, Any]],
+    price_eur: Optional[float],
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    """COGS = median of the priced matches (not the cheapest), then a plausibility check.
+
+    Returns (result or None, rejection reason).
+    """
+    if not result:
+        return None, "no match"
+    priced = [m for m in (result.get("matches") or [])
+              if isinstance(m.get("price_eur"), (int, float)) and m["price_eur"] > 0]
+    if not priced:
+        return None, "no priced match"
+    med = _median([m["price_eur"] for m in priced])
+    ref = min(priced, key=lambda m: abs(m["price_eur"] - med))
+    orig_key = "price_cny" if result.get("cogs_currency") == "CNY" else "price_original"
+    origs = [m.get(orig_key) for m in priced if isinstance(m.get(orig_key), (int, float))]
+    result.update({
+        "cogs_eur": round(med, 2),
+        "cogs_min_eur": round(min(m["price_eur"] for m in priced), 2),
+        "cogs_original": round(_median(origs), 2) if origs else result.get("cogs_original"),
+        "product_url": ref.get("url") or result.get("product_url"),
+        "estimator": f"median of {len(priced)} match(es)",
+    })
+    if price_eur and med > 0 and price_eur / med > MAX_PLAUSIBLE_X:
+        return None, f"implausible: X={price_eur / med:.0f} > {MAX_PLAUSIBLE_X:.0f} (median {med:.2f}€)"
+    return result, ""
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +222,7 @@ def search_apify_1688(
     print("[cogs] Trying Apify 1688 Image Search (crawleast/1688-image-search-scraper)...", file=sys.stderr)
 
     actor_id = "crawleast~1688-image-search-scraper"
-    api_url = f"https://api.apify.com/v2/acts/{actor_id}/runs"
+    api_url = f"https://api.apify.com/v2/acts/{actor_id}/runs?timeout={APIFY_IMAGE_RUN_TIMEOUT_S}&memory=1024"
 
     payload_data: Dict[str, Any] = {
         "maxImages": 1,
@@ -164,13 +248,8 @@ def search_apify_1688(
         "Authorization": f"Bearer {apify_token}",
     }
 
-    req = urllib.request.Request(api_url, data=payload, headers=headers, method="POST")
-
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            run_data = json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"[cogs] Apify run start failed: {e}", file=sys.stderr)
+    run_data = _start_apify_run(api_url, payload, headers, "apify_1688")
+    if run_data is None:
         return None
 
     run_id = run_data.get("data", {}).get("id")
@@ -198,6 +277,8 @@ def search_apify_1688(
 
     if not dataset_id:
         print("[cogs] Apify: run did not complete in time", file=sys.stderr)
+        LAST_ERROR["apify_1688"] = "Apify run timeout"
+        _abort_apify_run(run_id, apify_token)
         return None
 
     # Fetch results from dataset
@@ -425,7 +506,7 @@ def search_1688_keyword(
         return None
 
     actor_id = "crawleast~1688-product-scraper"
-    api_url = f"https://api.apify.com/v2/acts/{actor_id}/runs"
+    api_url = f"https://api.apify.com/v2/acts/{actor_id}/runs?timeout={APIFY_KEYWORD_RUN_TIMEOUT_S}&memory=1024"
 
     payload_data = {
         "search": keyword,
@@ -437,12 +518,8 @@ def search_1688_keyword(
         "Authorization": f"Bearer {apify_token}",
     }
 
-    req = urllib.request.Request(api_url, data=payload, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            run_data = json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"[cogs] Apify 1688 keyword run start failed: {e}", file=sys.stderr)
+    run_data = _start_apify_run(api_url, payload, headers, "apify_1688_keyword")
+    if run_data is None:
         return None
 
     run_id = run_data.get("data", {}).get("id")
@@ -466,6 +543,8 @@ def search_1688_keyword(
             pass
 
     if not dataset_id:
+        LAST_ERROR["apify_1688_keyword"] = "Apify run timeout"
+        _abort_apify_run(run_id, apify_token)
         return None
 
     results_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={apify_token}"
@@ -537,6 +616,12 @@ def main():
         "--apify-token",
         help="Apify API token (overrides ~/.hermes/apify_token).",
     )
+    parser.add_argument(
+        "--price-eur",
+        type=float,
+        default=None,
+        help=f"Selling price in EUR: enables the plausibility check (reject Prix/COGS > {MAX_PLAUSIBLE_X:.0f}).",
+    )
     args = parser.parse_args()
 
     image_input = args.image_url or args.image_path
@@ -548,29 +633,41 @@ def main():
 
     # Determine Apify token
     apify_token = args.apify_token or load_apify_token()
+    attempts: List[Dict[str, str]] = []
 
-    result = None
+    def accept(raw: Optional[Dict[str, Any]], method: str) -> bool:
+        """Median + plausibility on one method's matches; print the JSON result if accepted."""
+        res, why = robust_estimate(raw, args.price_eur)
+        if raw is None and LAST_ERROR.get(method):
+            why = LAST_ERROR[method]
+        attempts.append({"method": method, "outcome": "ok" if res else why})
+        if not res:
+            print(f"[cogs] ✗ {method}: {why}", file=sys.stderr)
+            return False
+        res["attempts"] = attempts
+        print(f"[cogs] ✓ Found via {method}: {res['cogs_eur']}€ ({res['estimator']})", file=sys.stderr)
+        json.dump(res, sys.stdout, indent=2, ensure_ascii=False)
+        print(file=sys.stdout)
+        return True
 
     # ---- Method 1: Apify 1688 Image Search ----
-    if apify_token and (args.image_url or args.image_path):
+    if apify_token and image_input:
+        raw = None
         try:
-            result = search_apify_1688(
+            raw = search_apify_1688(
                 image_url=args.image_url,
                 image_path=args.image_path,
                 apify_token=apify_token,
             )
         except Exception as e:
             print(f"[cogs] Apify error: {e}", file=sys.stderr)
-
-    if result:
-        print(f"[cogs] ✓ Found via Apify 1688: {result['cogs_eur']}€", file=sys.stderr)
-        json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
-        print(file=sys.stdout)
-        return
+        if accept(raw, "apify_1688"):
+            return
 
     # ---- Method 2: AliExpress Image Search (fallback) ----
     # For URL images, download to temp file first for aliexpress script
     temp_path = None
+    raw = None
     try:
         if is_url:
             print("[cogs] Downloading image for AliExpress search...", file=sys.stderr)
@@ -579,7 +676,7 @@ def main():
         else:
             ali_input = args.image_path
 
-        result = search_aliexpress_image(ali_input, is_url=False)
+        raw = search_aliexpress_image(ali_input, is_url=False)
     except Exception as e:
         print(f"[cogs] AliExpress error: {e}", file=sys.stderr)
     finally:
@@ -588,29 +685,22 @@ def main():
                 os.remove(temp_path)
             except OSError:
                 pass
-
-    if result:
-        print(f"[cogs] ✓ Found via AliExpress: {result['cogs_eur']}€", file=sys.stderr)
-        json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
-        print(file=sys.stdout)
+    if accept(raw, "aliexpress_image"):
         return
 
     # ---- Method 3: 1688 Keyword Search (fallback 2) ----
     if product_name and apify_token:
+        raw = None
         try:
             print(f"[cogs] Falling back to 1688 Keyword Search for: {product_name}...", file=sys.stderr)
-            result = search_1688_keyword(product_name, apify_token)
+            raw = search_1688_keyword(product_name, apify_token)
         except Exception as e:
             print(f"[cogs] 1688 Keyword search error: {e}", file=sys.stderr)
-
-    if result:
-        print(f"[cogs] ✓ Found via 1688 Keyword Search: {result['cogs_eur']}€", file=sys.stderr)
-        json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
-        print(file=sys.stdout)
-        return
+        if accept(raw, "apify_1688_keyword"):
+            return
 
     # ---- Not found ----
-    print("[cogs] ✗ No results from any method", file=sys.stderr)
+    print("[cogs] ✗ No plausible result from any method", file=sys.stderr)
     not_found = {
         "method": "not_found",
         "source": None,
@@ -620,6 +710,7 @@ def main():
         "product_url": None,
         "confidence": None,
         "matches": [],
+        "attempts": attempts,
     }
     json.dump(not_found, sys.stdout, indent=2, ensure_ascii=False)
     print(file=sys.stdout)

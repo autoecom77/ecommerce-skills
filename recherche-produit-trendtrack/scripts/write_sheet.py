@@ -47,7 +47,11 @@ def write_to_sheet(
     """Find last non-empty row and write new rows at exact position."""
     if not rows:
         print("[write_sheet] No rows to write", file=sys.stderr)
-        return {"written": 0, "start": 0, "end": 0}
+        res = {"written": 0, "start": 0, "end": 0, "range": "", "dry_run": dry_run}
+        Path(result_out).parent.mkdir(parents=True, exist_ok=True)
+        with open(result_out, "w", encoding="utf-8") as f:
+            json.dump(res, f, indent=2)
+        return res
 
     assert all(len(r) == 75 for r in rows), "All rows must have exactly 75 columns"
 

@@ -91,14 +91,25 @@ def has_wg0_interface() -> bool:
 
 HAS_WG0 = has_wg0_interface()
 
+# Shopify's edge answers 429/430 per store and per IP once a store sees a burst
+# (2026-10-13: a 2nd pass 10 min after the 1st priced 40/355 instead of 98/355).
+RATE_LIMIT_BACKOFF_S = 8
+DEFAULT_WORKERS = 6
+
 
 def fetch_page(
     url: str,
     country: str = "FR",
     timeout: int = 20,
     accept: str = "text/html",
+    retries: int = 2,
 ) -> Tuple[str, str]:
-    """Fetch URL with proper headers, localization cookies, and wg0 interface if available."""
+    """Fetch URL with proper headers, localization cookies, and wg0 interface if available.
+
+    Retries with backoff on HTTP 429/430 and raises RuntimeError("HTTP 429 rate limited")
+    if the store keeps refusing, so the caller records an explicit error instead of
+    parsing the block page as "non-shopify, no price".
+    """
     cookie_str = f"localization={country}; cart_currency=EUR"
     accept_lang = {
         "FR": "fr-FR,fr;q=0.9",
@@ -109,32 +120,33 @@ def fetch_page(
     cmd = [
         "curl",
         "-sL",
+        "-g",  # --globoff: ad URLs often carry unexpanded {{site_source_name}} templates (curl exit 3)
         "--compressed",
         "--max-time", str(timeout),
         "-A", UA,
         "-H", f"Accept: {accept},*/*;q=0.8",
         "-H", f"Accept-Language: {accept_lang}",
         "-H", f"Cookie: {cookie_str}",
-        "-w", "\n%{url_effective}",
+        "-w", "\n%{http_code} %{url_effective}",
     ]
     if HAS_WG0:
         cmd.extend(["--interface", "wg0"])
     cmd.append(url)
 
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
-    if res.returncode != 0:
-        raise RuntimeError(f"curl failed with code {res.returncode}: {res.stderr[:100]}")
-
-    output = res.stdout
-    if "\n" in output:
-        parts = output.rsplit("\n", 1)
-        body = parts[0]
-        final_url = parts[1].strip() or url
-    else:
-        body = output
-        final_url = url
-
-    return final_url, body
+    for attempt in range(retries + 1):
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+        if res.returncode != 0:
+            raise RuntimeError(f"curl failed with code {res.returncode}: {res.stderr[:100]}")
+        body, _, tail = res.stdout.rpartition("\n")
+        code_str, _, final_url = tail.strip().partition(" ")
+        code = int(code_str) if code_str.isdigit() else 0
+        if code in (429, 430):
+            if attempt < retries:
+                time.sleep(RATE_LIMIT_BACKOFF_S * (attempt + 1))
+                continue
+            raise RuntimeError(f"HTTP {code} rate limited")
+        return final_url.strip() or url, body
+    raise RuntimeError("unreachable")
 
 
 def clean_url(u: Optional[str]) -> str:
@@ -212,7 +224,7 @@ def find_handle(
     return None, None
 
 
-def extract_og_or_jsonld_price(page_html: str) -> Optional[float]:
+def extract_og_or_jsonld_price(page_html: str, is_shopify: bool = False) -> Optional[float]:
     """Fallback price extraction from OpenGraph, JSON-LD, Microdata, or clean HTML regex."""
     # 1. OpenGraph amount
     m = re.search(
@@ -250,7 +262,13 @@ def extract_og_or_jsonld_price(page_html: str) -> Optional[float]:
     m = re.search(r'"price"\s*:\s*([0-9]+(?:\.[0-9]+)?)', page_html)
     if m:
         try:
-            return float(m.group(1))
+            v = float(m.group(1))
+            # Shopify inline product JSON ("price":4500) is in CENTS — JSON-LD prices carry
+            # decimals. Without this, lounge.com's 45.00 € offer was read as 4 500 €.
+            # Integers < 100 stay euros (blackroll.com dataLayer "price":55 = 55 €, not 0.55 €).
+            if is_shopify and "." not in m.group(1) and v >= 100:
+                v = round(v / 100.0, 2)
+            return v
         except ValueError:
             pass
 
@@ -371,7 +389,7 @@ def extract_price_from_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
             out["price_error"] = f"shopify js error: {str(e)[:100]}"
 
     # 2. Fallback: OpenGraph / JSON-LD / HTML Regex
-    p = extract_og_or_jsonld_price(page_html)
+    p = extract_og_or_jsonld_price(page_html, is_shopify)
     if p is not None:
         curr = detected_curr or "EUR"
         rate = CONVERSION_RATES.get(curr, 1.0)
@@ -405,7 +423,7 @@ def extract_price_from_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
 
 def process_candidates_list(
     candidates: List[Dict[str, Any]],
-    workers: int = 12,
+    workers: int = DEFAULT_WORKERS,
 ) -> List[Dict[str, Any]]:
     """Process a list of candidates in parallel."""
     t0 = time.time()
@@ -447,7 +465,8 @@ def main() -> None:
     parser.add_argument("--input", "-i", help="Input JSON file of candidates.")
     parser.add_argument("--output", "-o", help="Output JSON file for priced candidates.")
     parser.add_argument("--url", "-u", help="Test a single product URL.")
-    parser.add_argument("--workers", "-w", type=int, default=12, help="Number of worker threads (default 12).")
+    parser.add_argument("--workers", "-w", type=int, default=DEFAULT_WORKERS,
+                        help=f"Number of worker threads (default {DEFAULT_WORKERS}; more triggers Shopify 429s).")
     parser.add_argument("--from-sheet", help="Google Sheet ID to scan for URLs.")
     parser.add_argument("--range", default="Products!B2:C500", help="Range to scan in Sheet (default Products!B2:C500).")
     args = parser.parse_args()

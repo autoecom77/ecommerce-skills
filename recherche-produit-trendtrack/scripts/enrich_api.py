@@ -32,7 +32,7 @@ import sys
 from typing import Any, Dict, List
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
-from query_ads_api import api_query, load_api_key, extract_image_url  # noqa: E402
+from query_ads_api import api_query, load_api_key, extract_image_url, request_cost  # noqa: E402
 
 
 def format_trendtrack_ad_url(ad_id: str, ad_source: str = "meta") -> str:
@@ -57,6 +57,7 @@ def enrich_shop(domain: str, api_key: str, limit: int = 20) -> Dict[str, Any]:
         "order": "desc",
     }
     resp = api_query(payload, api_key)
+    cost = request_cost(resp)
     rows = resp.get("data") or []
     ads = []
     for ad in rows:
@@ -78,7 +79,7 @@ def enrich_shop(domain: str, api_key: str, limit: int = 20) -> Dict[str, Any]:
             "landing_url": content.get("landingPageUrl") or "",
             "body": (content.get("body") or "")[:200],
         })
-    return {"domain": domain, "ads": ads, "ads_count": len(ads), "error": ""}
+    return {"domain": domain, "ads": ads, "ads_count": len(ads), "error": "", "credits": cost}
 
 
 def main() -> None:
@@ -86,7 +87,11 @@ def main() -> None:
     src = parser.add_mutually_exclusive_group(required=True)
     src.add_argument("--candidates", "-c", help="JSON array of candidates with shop_domain.")
     src.add_argument("--shop", "-s", help="Single shop domain to enrich (test mode).")
-    parser.add_argument("--limit", type=int, default=20, help="Max ads per shop (default 20).")
+    parser.add_argument("--limit", type=int, default=8,
+                        help="Max ads per shop (default 8 = the AD1-AD8 Sheet blocks; billing is per returned ad).")
+    parser.add_argument("--max-credits", type=int, default=0,
+                        help="Credit budget for the enrichment (0 = unlimited). Shops beyond it keep only their search ad.")
+    parser.add_argument("--stats-out", default="/tmp/tt_enrich_stats.json", help="Where to write enrichment stats.")
     args = parser.parse_args()
 
     api_key = load_api_key()
@@ -101,10 +106,17 @@ def main() -> None:
         candidates: List[Dict[str, Any]] = json.load(f)
 
     enriched: List[Dict[str, Any]] = []
+    spent, max_cost, n_ok, n_skipped, n_err = 0, 0, 0, 0, 0
+    est_cost = int(round(args.limit * 1.5))
     for i, cand in enumerate(candidates, 1):
         domain = cand.get("shop_domain") or ""
         if not domain:
             cand["ads"], cand["ads_count"], cand["ads_error"] = [], 0, "no domain"
+            enriched.append(cand)
+            continue
+        if args.max_credits and spent + (max_cost or est_cost) > args.max_credits:
+            cand["ads"], cand["ads_count"], cand["ads_error"] = [], 0, "credit budget reached"
+            n_skipped += 1
             enriched.append(cand)
             continue
         print(f"[enrich_api] ({i}/{len(candidates)}) enriching {domain}...", file=sys.stderr)
@@ -113,10 +125,26 @@ def main() -> None:
             cand["ads"] = result["ads"]
             cand["ads_count"] = result["ads_count"]
             cand["ads_error"] = ""
+            spent += result.get("credits", 0)
+            max_cost = max(max_cost, result.get("credits", 0))
+            n_ok += 1
         except Exception as e:
             print(f"[enrich_api] ERROR {domain}: {e}", file=sys.stderr)
             cand["ads"], cand["ads_count"], cand["ads_error"] = [], 0, str(e)
+            n_err += 1
         enriched.append(cand)
+
+    if n_skipped:
+        print(f"[enrich_api] Credit budget {args.max_credits} reached: {n_skipped} shop(s) keep only their search ad.",
+              file=sys.stderr)
+    print(f"[enrich_api] Done: {n_ok} enriched, {n_err} errors, {n_skipped} skipped — {spent} credits", file=sys.stderr)
+    if args.stats_out:
+        try:
+            with open(args.stats_out, "w", encoding="utf-8") as f:
+                json.dump({"shops": len(candidates), "enriched": n_ok, "errors": n_err, "skipped_budget": n_skipped,
+                           "credits_spent": spent, "budget": args.max_credits, "limit": args.limit}, f, indent=2)
+        except Exception as e:
+            print(f"[enrich_api] Warning: could not write stats ({e})", file=sys.stderr)
 
     json.dump(enriched, sys.stdout, indent=2, ensure_ascii=False)
     print(file=sys.stdout)

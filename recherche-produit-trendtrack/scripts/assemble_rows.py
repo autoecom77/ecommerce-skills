@@ -23,12 +23,34 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 MONTHS = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
 ]
+
+# Column D (Pays) uses French country names, like the rows written by earlier runs.
+COUNTRY_FR = {
+    "FR": "France", "DE": "Allemagne", "NL": "Pays-Bas", "BE": "Belgique", "AT": "Autriche",
+    "CH": "Suisse", "IT": "Italie", "ES": "Espagne", "PT": "Portugal", "GB": "Royaume-Uni",
+    "UK": "Royaume-Uni", "IE": "Irlande", "LU": "Luxembourg", "PL": "Pologne", "SE": "Suède",
+    "DK": "Danemark", "FI": "Finlande", "NO": "Norvège", "CZ": "Tchéquie", "GR": "Grèce",
+    "HR": "Croatie", "RO": "Roumanie", "HU": "Hongrie", "SK": "Slovaquie", "SI": "Slovénie",
+    "BG": "Bulgarie", "LT": "Lituanie", "LV": "Lettonie", "EE": "Estonie", "CY": "Chypre", "MT": "Malte",
+    "RS": "Serbie", "TR": "Turquie", "US": "États-Unis", "CA": "Canada", "AU": "Australie",
+}
+
+
+def method_label(method: Any) -> str:
+    """Readable search-method label for the comment column (M1 / M2 / M1+M2)."""
+    tags = {t.strip() for t in str(method or "").split(",") if t.strip()}
+    m1, m2 = "shopify_reach_growth" in tags, "volume_live" in tags
+    if m1 and m2:
+        return "M1+M2"
+    if m2:
+        return "M2 volume live"
+    return "M1 reach growth"
 
 
 def format_mmm_yy(iso_date: str) -> str:
@@ -72,7 +94,7 @@ def format_thousands(n: Any) -> str:
 def assemble_rows(
     candidates: List[Dict[str, Any]],
     enriched_data: Dict[str, Dict[str, Any]],
-) -> Tuple_rows:
+) -> Tuple[List[List[Any]], List[Dict[str, Any]]]:
     """Convert candidates into 75-column Sheet rows sorted by X coefficient descending."""
     rows_meta = []
 
@@ -85,7 +107,8 @@ def assemble_rows(
 
         title = c.get("title_fr") or c.get("product_title") or c.get("title") or domain
         product_url = c.get("product_url") or c.get("landing_url") or ""
-        country = c.get("country_fr") or c.get("country") or "France"
+        main_cc = str((c.get("country_breakdown") or {}).get("main") or "").upper()
+        country = c.get("country_fr") or c.get("country") or COUNTRY_FR.get(main_cc) or main_cc or "France"
         niche = c.get("niche") or "Divers"
 
         e = enriched_data.get(domain, {})
@@ -146,7 +169,7 @@ def assemble_rows(
         delta_7d = c.get("reach_delta_7d") or 0
         cogs_note = c.get("cogs_note") or f"COGS {cogs:.2f}€ ({c.get('cogs_source', '1688')})"
         comment = (
-            f"M1 reach growth. {cogs_note}. "
+            f"{method_label(c.get('method'))}. {cogs_note}. "
             f"{live_ads} ads actives, reach top ad {format_thousands(reach_tot)} "
             f"(+{format_thousands(delta_7d)} sur 7j). {c.get('note', '')}"
         ).strip()
