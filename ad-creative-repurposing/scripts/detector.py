@@ -164,10 +164,17 @@ def detect_image_language(
 
         mime = "image/png" if image_path.suffix.lower() == ".png" else "image/jpeg"
         prompt = (
-            "Analyze this advertisement image. Answer strictly in JSON (no markdown fences) "
+            "Analyze this advertisement image carefully. Answer strictly in JSON (no markdown fences) "
             "with keys:\n"
-            '{"has_text": true/false, "language": "fr"/"en"/"de"/..., "is_french": true/false, '
-            '"transcribed_text": "...", "french_translation": "..."}'
+            '{\n'
+            '  "has_text": true/false,\n'
+            '  "language": "fr"/"en"/"de"/...,\n'
+            '  "is_french": true/false,\n'
+            '  "transcribed_text": "...",\n'
+            '  "french_translation": "...",\n'
+            '  "has_logo": true/false,\n'
+            '  "logo_description": "..." (brief description of any visible competitor logo, brand icon, watermark, or brand name emblem, or "" if none)\n'
+            '}'
         )
 
         payload = {
@@ -211,6 +218,8 @@ def detect_image_language(
                 "is_french": bool(parsed.get("is_french", False)),
                 "detected_text": parsed.get("transcribed_text", ""),
                 "french_translation": parsed.get("french_translation", ""),
+                "has_logo": bool(parsed.get("has_logo", False)),
+                "logo_description": str(parsed.get("logo_description", "") or "").strip(),
             }
     except Exception as e:
         return {
@@ -219,6 +228,8 @@ def detect_image_language(
             "is_french": False,
             "detected_text": "",
             "french_translation": "",
+            "has_logo": False,
+            "logo_description": "",
             "error": str(e),
         }
 

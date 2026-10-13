@@ -30,6 +30,18 @@ BASE_TRANSLATION_PROMPT = (
     "high-converting French translations. Only the text changes."
 )
 
+BASE_DELOGO_PROMPT = (
+    "Completely remove and erase any brand logos, company emblems, watermarks, or competitor branding from this advertisement image. "
+    "Seamlessly inpaint and blend the background or surface where the logo was located so that no trace of any logo remains. "
+    "Keep all other visual elements, product packaging, composition, colors, typography style, and all visible text strictly identical to the original image. "
+    "Do not alter or remove any promotional copy or marketing text; only remove the brand logo."
+)
+
+LOGO_REMOVAL_CLAUSE = (
+    " Also, completely remove and erase any brand logos, company emblems, watermarks, or competitor branding from the image, "
+    "seamlessly inpainting and blending the background or surface so no trace of any logo remains."
+)
+
 
 def get_openrouter_api_key() -> str:
     """Retrieve OPENROUTER_API_KEY from environment, ~/.hermes/.env, or local .env."""
@@ -112,23 +124,40 @@ def translate_image_openrouter(
     french_text_guide: Optional[str] = None,
     aspect_ratio: str = "1:1",
     timeout: int = 120,
+    remove_logo: bool = False,
+    logo_description: Optional[str] = None,
+    is_french: bool = False,
 ) -> Dict[str, Any]:
     """
-    Translate image text using OpenRouter's Image API with image-to-image input references.
+    Translate image text and/or remove logos using OpenRouter's Image API
+    with image-to-image input references.
     """
     api_key = get_openrouter_api_key()
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Build prompt
-    prompt = custom_prompt or BASE_TRANSLATION_PROMPT
-    if french_text_guide and not custom_prompt:
-        clean_guide = french_text_guide.strip()
-        prompt = (
-            f"{prompt}\n\n"
-            f"Use the following high-converting French marketing translations for the ad copy:\n"
-            f"{clean_guide}"
-        )
+    if custom_prompt:
+        prompt = custom_prompt
+    elif is_french:
+        # French image or text-free image: only logo removal
+        prompt = BASE_DELOGO_PROMPT
+        if logo_description and logo_description.strip():
+            prompt += f" Specifically remove the competitor logo: {logo_description.strip()}."
+    else:
+        # Non-French image: translate text to French, conditionally remove logo
+        prompt = BASE_TRANSLATION_PROMPT
+        if remove_logo:
+            prompt += LOGO_REMOVAL_CLAUSE
+            if logo_description and logo_description.strip():
+                prompt += f" Specifically remove the competitor logo: {logo_description.strip()}."
+        if french_text_guide:
+            clean_guide = french_text_guide.strip()
+            prompt = (
+                f"{prompt}\n\n"
+                f"Use the following high-converting French marketing translations for the ad copy:\n"
+                f"{clean_guide}"
+            )
 
     # Build image input reference
     image_ref = build_image_reference(image_source, media_url=media_url)
@@ -192,13 +221,16 @@ def translate_image_openrouter(
         "model": model,
         "output_file": str(output_path.resolve()),
         "source_image": str(image_source),
+        "remove_logo": bool(remove_logo or is_french),
+        "is_french": bool(is_french),
+        "applied_prompt": prompt,
         "usage": data.get("usage", {}),
     }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Translate advertisement image text to French via OpenRouter Image API"
+        description="Translate advertisement image text and/or remove logos via OpenRouter Image API"
     )
     parser.add_argument("source", help="Path to local source image or public image URL")
     parser.add_argument("output", help="Destination path for translated image")
@@ -214,6 +246,15 @@ def main() -> None:
     parser.add_argument(
         "--aspect-ratio", default="1:1", help="Aspect ratio (default: 1:1)"
     )
+    parser.add_argument(
+        "--remove-logo", action="store_true", help="Remove competitor logos from image"
+    )
+    parser.add_argument(
+        "--logo-desc", default=None, help="Optional description of logo to remove"
+    )
+    parser.add_argument(
+        "--is-french", action="store_true", help="Image is French/text-free; only remove logo"
+    )
 
     args = parser.parse_args()
 
@@ -225,6 +266,9 @@ def main() -> None:
             model=args.model,
             french_text_guide=args.guide,
             aspect_ratio=args.aspect_ratio,
+            remove_logo=args.remove_logo,
+            logo_description=args.logo_desc,
+            is_french=args.is_french,
         )
         print(json.dumps(res, indent=2))
     except Exception as e:

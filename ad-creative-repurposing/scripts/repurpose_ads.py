@@ -230,44 +230,88 @@ def process_product_ads(
                 img_lang = analysis.get("language", "unknown")
                 detected_txt = analysis.get("detected_text", "")
                 french_trans = analysis.get("french_translation", "")
+                has_logo = analysis.get("has_logo", False)
+                logo_desc = analysis.get("logo_description", "")
 
-                print(f"      Has text: {has_txt} | Language: {img_lang}")
+                print(f"      Has text: {has_txt} | Language: {img_lang} | Has logo: {has_logo}")
+                if has_logo and logo_desc:
+                    print(f"      Logo identified: {logo_desc[:120]}...")
                 if detected_txt:
                     print(f"      Original text: {detected_txt[:120]}...")
                 if french_trans:
                     print(f"      French marketing translation: {french_trans[:120]}...")
 
+                ad_record["has_logo"] = has_logo
+                ad_record["logo_description"] = logo_desc
+
                 if not has_txt or is_fr:
-                    # Universal / French image: keep raw as-is
-                    raw_dest = prod_dir / f"ad_{slot}_raw{source_file.suffix}"
-                    shutil.copy2(source_file, raw_dest)
-                    ad_record["action"] = "direct_download_raw"
-                    ad_record["output_image"] = str(raw_dest)
-                    ad_record["reason"] = "No text or already in French (preserved raw)"
-                    print(f"      ✅ Image is French/Universal. Preserved raw: {raw_dest.name}")
+                    # French or universal (copy-free) image
+                    if not has_logo:
+                        # No text or French, and NO logo: keep raw as-is (0 credits)
+                        raw_dest = prod_dir / f"ad_{slot}_raw{source_file.suffix}"
+                        shutil.copy2(source_file, raw_dest)
+                        ad_record["action"] = "direct_download_raw"
+                        ad_record["output_image"] = str(raw_dest)
+                        ad_record["reason"] = "No text or already in French, and no logo detected (preserved raw, 0 credits)"
+                        print(f"      ✅ Image is French/Universal with no logo. Preserved raw: {raw_dest.name}")
+                    else:
+                        # French/Universal image, BUT HAS A LOGO: remove logo only!
+                        ad_record["action"] = "openrouter_image_delogo"
+                        ad_record["reason"] = f"Image is French/Universal but contains competitor logo; routed to OpenRouter delogo ({image_model})"
+                        delogoed_dest = prod_dir / f"ad_{slot}_delogoed.png"
+
+                        if dry_run:
+                            ad_record["status"] = "dry_run_skipped"
+                            ad_record["output_image"] = str(delogoed_dest)
+                            print(f"      ⚠️ Dry Run: Would remove logo via OpenRouter ({image_model}) -> {delogoed_dest.name}")
+                        else:
+                            print(f"      🎨 Removing logo via OpenRouter ({image_model})...")
+                            or_res = translate_image_openrouter(
+                                image_source=str(source_file),
+                                output_path=delogoed_dest,
+                                media_url=media_url,
+                                model=image_model,
+                                remove_logo=True,
+                                logo_description=logo_desc,
+                                is_french=True,
+                            )
+                            ad_record["output_image"] = str(delogoed_dest)
+                            ad_record["openrouter_result"] = or_res
+                            print(f"      ✅ OpenRouter logo removal completed: {delogoed_dest.name}")
                 else:
-                    # Non-French Image: OpenRouter Image translation
-                    ad_record["action"] = "openrouter_image_translate"
-                    ad_record["reason"] = f"Image text in {img_lang}; routed to OpenRouter Image API ({image_model})"
+                    # Non-French Image: OpenRouter Image translation (with logo removal if logo present)
                     ad_record["detected_text"] = detected_txt
                     ad_record["french_translation"] = french_trans
+                    translated_dest = prod_dir / f"ad_{slot}_translated_fr.png"
+
+                    if has_logo:
+                        ad_record["action"] = "openrouter_image_translate_delogo"
+                        ad_record["reason"] = f"Image text in {img_lang} and competitor logo detected; routed to OpenRouter translation + delogo ({image_model})"
+                    else:
+                        ad_record["action"] = "openrouter_image_translate"
+                        ad_record["reason"] = f"Image text in {img_lang}; routed to OpenRouter Image API ({image_model})"
 
                     if dry_run:
                         ad_record["status"] = "dry_run_skipped"
-                        print(f"      ⚠️ Dry Run: Would translate text to French via OpenRouter ({image_model})")
+                        ad_record["output_image"] = str(translated_dest)
+                        action_label = "translate text to French and remove logo" if has_logo else "translate text to French"
+                        print(f"      ⚠️ Dry Run: Would {action_label} via OpenRouter ({image_model}) -> {translated_dest.name}")
                     else:
-                        print(f"      🎨 Translating image via OpenRouter ({image_model})...")
-                        translated_dest = prod_dir / f"ad_{slot}_translated_fr.png"
+                        action_label = "Translating image and removing logo" if has_logo else "Translating image"
+                        print(f"      🎨 {action_label} via OpenRouter ({image_model})...")
                         or_res = translate_image_openrouter(
                             image_source=str(source_file),
                             output_path=translated_dest,
                             media_url=media_url,
                             model=image_model,
                             french_text_guide=french_trans,
+                            remove_logo=has_logo,
+                            logo_description=logo_desc,
+                            is_french=False,
                         )
                         ad_record["output_image"] = str(translated_dest)
                         ad_record["openrouter_result"] = or_res
-                        print(f"      ✅ OpenRouter image translation completed: {translated_dest.name}")
+                        print(f"      ✅ OpenRouter image processing completed: {translated_dest.name}")
 
             ad_record["status"] = "success"
 

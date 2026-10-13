@@ -26,11 +26,14 @@ def translate_image_nous(
     media_url: Optional[str] = None,
     french_text_guide: Optional[str] = None,
     model: Optional[str] = None,
+    remove_logo: bool = False,
+    logo_description: Optional[str] = None,
+    is_french: bool = False,
+    **kwargs,
 ) -> Dict[str, Any]:
     """
     Backward-compatible entrypoint. Delegates to translate_image_openrouter().
     """
-    kwargs = {}
     if model:
         kwargs["model"] = model
     return translate_image_openrouter(
@@ -39,6 +42,9 @@ def translate_image_nous(
         custom_prompt=custom_prompt,
         media_url=media_url,
         french_text_guide=french_text_guide,
+        remove_logo=remove_logo,
+        logo_description=logo_description,
+        is_french=is_french,
         **kwargs,
     )
 

@@ -37,12 +37,20 @@ flowchart TD
     FetchMedia --> TypeCheck{"Type de Média?"}
     
     %% Branche Image
-    TypeCheck -->|Image| ImgText{"Texte détecté?"}
-    ImgText -->|Aucun texte| ImgDirect["Téléchargement Direct (Raw)<br/>/home/ubuntu/AdCreatives/&lt;produit&gt;/ad_N_raw.jpg"]
-    ImgText -->|Texte présent| ImgLang{"Langue du texte = Français?<br/>(detector.py: Gemini 3.8 Flash)"}
-    ImgLang -->|Oui (FR)| ImgDirect
-    ImgLang -->|Non (Autre)| ORGen["OpenRouter Image Translation<br/>(seedream-5-0-flash / Prompt FR guidé)"]
+    TypeCheck -->|Image| ImgScan["Analyse Vision (detector.py: Gemini 3.8 Flash)<br/>• Détection Texte & Langue<br/>• Détection Logo / Watermark"]
+    ImgScan --> ImgLang{"Langue du texte = Français<br/>ou Aucun Texte?"}
+    
+    %% Sous-branche FR / Sans texte
+    ImgLang -->|Oui (FR ou Sans Texte)| ImgLogoFR{"Logo détecté?"}
+    ImgLogoFR -->|Non (0 logo)| ImgDirect["Téléchargement Direct (Raw - 0 crédit)<br/>/home/ubuntu/AdCreatives/&lt;produit&gt;/ad_N_raw.jpg"]
+    ImgLogoFR -->|Oui (Logo présent)| ImgDelogo["OpenRouter Inpainting Delogo<br/>(Prompt suppression logo seul)<br/>/home/ubuntu/AdCreatives/&lt;produit&gt;/ad_N_delogoed.png"]
+    
+    %% Sous-branche Non-FR
+    ImgLang -->|Non (Autre langue)| ImgLogoNonFR{"Logo détecté?"}
+    ImgLogoNonFR -->|Non (0 logo)| ORGen["OpenRouter Image Translation<br/>(seedream-5-0-flash / Prompt FR guidé)"]
+    ImgLogoNonFR -->|Oui (Logo présent)| ORGenDelogo["OpenRouter Translation + Delogo<br/>(Prompt FR + Suppression logo)"]
     ORGen --> ImgSave["Sauvegarder Image Traduite<br/>/home/ubuntu/AdCreatives/&lt;produit&gt;/ad_N_translated_fr.png"]
+    ORGenDelogo --> ImgSave
     
     %% Branche Vidéo
     TypeCheck -->|Vidéo| VidAudio["Analyse Audio Locale (faster-whisper 0 crédit)"]
@@ -58,6 +66,7 @@ flowchart TD
 
     %% Clôture & Sync
     ImgDirect --> Manifest
+    ImgDelogo --> Manifest
     ImgSave --> Manifest
     VidRepurposed --> Manifest
     
@@ -73,9 +82,9 @@ flowchart TD
 |---|---|---|
 | **0. Lecture Sheet** | `sheet_rows.py` | Sélection de la ligne si plusieurs cochées + confirmation nom/URL |
 | **1. Extraction Ads** | `ad_resolver.py` | Validation des ads trouvées (AD1..AD3) |
-| **2. Détection Type & Langue** | `detector.py` (MIME + whisper + Gemini 3.8 Flash) | Arbitrage si ambigu |
-| **3. Branche Image FR / Sans texte** | Téléchargement direct raw (0 crédit) | — |
-| **4. Branche Image non-FR** | `openrouter_image_translator.py` via OpenRouter Image API | Revue de l'image traduite |
+| **2. Détection Type & Langue** | `detector.py` (MIME + whisper + Gemini 3.8 Flash text & logo detection) | Arbitrage si ambigu |
+| **3. Branche Image FR / Sans texte** | Téléchargement direct raw (0 crédit) si aucun logo ; OpenRouter Delogo (`ad_N_delogoed.png`) si logo présent | — |
+| **4. Branche Image non-FR** | `openrouter_image_translator.py` via OpenRouter Image API (Traduction FR standard ou FR + suppression logo) | Revue de l'image traduite |
 | **5. Branche Vidéo FR** | Téléchargement brut direct (raw, 0 crédit) | — |
 | **6. Branche Vidéo non-FR** | `vozo_video_translator.py` via Vozo API | Confirmation avant lancement du job payant |
 | **7. Sync Cloud Continue** | `sync_creatives.py` (One-way local vers Drive à chaque étape) | Notification avec chemins des fichiers générés |
@@ -120,7 +129,9 @@ Tous les actifs sont stockés dans des dossiers dédiés par produit sur le serv
 ├── ad_2_dubbed_fr.mp4         # (master doublé et synchronisé si vidéo traduite via Vozo)
 ├── ad_2_subtitles_fr.srt      # (sous-titres français exportés par Vozo)
 ├── ad_2_repurposed.mp4        # (créative finale avec filtre de nuit 5500K)
-├── ad_3_translated_fr.png     # (si image traduite via OpenRouter Image API)
+├── ad_3_translated_fr.png     # (si image traduite ± delogoée via OpenRouter Image API)
+├── ad_3_delogoed.png          # (si image FR / sans texte avec logo concurrent supprimé)
+├── ad_3_raw.jpg               # (si image FR / sans texte sans aucun logo)
 └── ad_3_source.jpg            # (image originale source)
 ```
 
