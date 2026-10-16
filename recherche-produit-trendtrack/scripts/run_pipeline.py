@@ -448,13 +448,15 @@ def main() -> None:
         infer_cmd = [sys.executable, str(SCRIPT_DIR / "infer_niche_priority.py"),
                      "--candidates", str(P["kept"]), "--output", str(P["kept_meta"]),
                      "--vocab-out", str(P["vocab"]), "--stats-out", str(P["infer_stats"])]
-        infer_ok = run_cmd(infer_cmd, "Inférence Niche & Priorité (infer_niche_priority.py, OpenRouter)",
-                           fatal=False)
-        if infer_ok and P["kept_meta"].exists():
-            kept = load_json(P["kept_meta"], kept) or kept
-            P["kept"].write_text(json.dumps(kept, indent=2, ensure_ascii=False), encoding="utf-8")
-        else:
-            log("[pipeline] Warning: niche/priority inference failed — continuing with empty columns")
+        # Stop before any Sheet write if classification/vocabulary fails; never
+        # silently replace a missing decision with an invented dropdown value.
+        run_cmd(infer_cmd, "Inférence Niche & Priorité (Jev 1.14 Decisions)", fatal=True)
+        classified = load_json(P["kept_meta"], None)
+        if (not isinstance(classified, list) or len(classified) != len(kept)
+                or any(not c.get("niche") or not c.get("priority") for c in classified)):
+            raise SystemExit("[pipeline] Incomplete Jev classification — Sheet write cancelled; artifacts preserved")
+        kept = classified
+        P["kept"].write_text(json.dumps(kept, indent=2, ensure_ascii=False), encoding="utf-8")
     else:
         P["infer_stats"].write_text("{}", encoding="utf-8")
 

@@ -1,0 +1,385 @@
+{
+  "executed_at_utc": "2026-10-16T22:14:51Z",
+  "requested_model": "typesafe/jev-1.14",
+  "endpoint": "https://openrouter.ai/api/alpha/decisions",
+  "dropdown_vocab": {
+    "niches": [
+      "Animaux",
+      "Auto/Moto",
+      "Bébé/Maman",
+      "Beauté/Femme",
+      "Cuisine",
+      "Fashion/Bijoux",
+      "Homme",
+      "Maison",
+      "Santé",
+      "Sport",
+      "Autre"
+    ],
+    "priorities": [
+      "1 Urgent",
+      "2 Important",
+      "3 Normal",
+      "4 Faible",
+      "5 Lancé"
+    ],
+    "source": "google_sheets_data_validation",
+    "source_ranges": {}
+  },
+  "successful_live_decisions": 7,
+  "total_cost_usd": 0.00034108200000000004,
+  "sheet_writes": false,
+  "ads_unchanged_verified": true,
+  "offline_tests_passed": 22,
+  "assembly_rows_verified": 3,
+  "results": [
+    {
+      "kind": "synthetic_fixture",
+      "product": "Legging compression 3D femme",
+      "niche": "Sport",
+      "priority": "3 Normal",
+      "response": {
+        "model": "typesafe/jev-1.14-20261014",
+        "answers": {
+          "niche": {
+            "type": "choice",
+            "choice": "Sport",
+            "probabilities": {
+              "Animaux": 0,
+              "Auto/Moto": 0,
+              "Bébé/Maman": 0,
+              "Beauté/Femme": 0.04,
+              "Cuisine": 0,
+              "Fashion/Bijoux": 0.34,
+              "Homme": 0,
+              "Maison": 0,
+              "Santé": 0.01,
+              "Sport": 0.61,
+              "Autre": 0
+            },
+            "confidence": 0.57
+          },
+          "priority": {
+            "type": "choice",
+            "choice": "3 Normal",
+            "probabilities": {
+              "1 Urgent": 0.08,
+              "2 Important": 0.14,
+              "3 Normal": 0.77,
+              "4 Faible": 0.01,
+              "5 Lancé": 0
+            },
+            "confidence": 0.71
+          }
+        },
+        "usage": {
+          "input_tokens": 1046,
+          "output_tokens": 175,
+          "cost": 4.3932e-05
+        },
+        "id": "gen-dec-1792188718-RDXXvSHqpGQzt0zxDK62",
+        "provider": "TypeSafe"
+      }
+    },
+    {
+      "kind": "synthetic_fixture",
+      "product": "Harnais de promenade réglable pour chien",
+      "shop_domain": "fixture-pets.example",
+      "niche": "Animaux",
+      "priority": "3 Normal",
+      "response": {
+        "id": "gen-dec-1792188796-zvILfHIMdxkmcf6Lrtqp",
+        "model": "typesafe/jev-1.14-20261014",
+        "provider": "TypeSafe",
+        "answers": {
+          "niche": {
+            "type": "choice",
+            "choice": "Animaux",
+            "probabilities": {
+              "Animaux": 1,
+              "Auto/Moto": 0,
+              "Bébé/Maman": 0,
+              "Beauté/Femme": 0,
+              "Cuisine": 0,
+              "Fashion/Bijoux": 0,
+              "Homme": 0,
+              "Maison": 0,
+              "Santé": 0,
+              "Sport": 0,
+              "Autre": 0
+            },
+            "confidence": 1
+          },
+          "priority": {
+            "type": "choice",
+            "choice": "3 Normal",
+            "probabilities": {
+              "1 Urgent": 0.11,
+              "2 Important": 0.15,
+              "3 Normal": 0.73,
+              "4 Faible": 0.01,
+              "5 Lancé": 0
+            },
+            "confidence": 0.66
+          }
+        },
+        "usage": {
+          "input_tokens": 1067,
+          "output_tokens": 177,
+          "cost": 4.4814e-05
+        },
+        "requested_model": "typesafe/jev-1.14"
+      }
+    },
+    {
+      "kind": "synthetic_fixture",
+      "product": "Lot de 3 poêles de cuisine en acier inoxydable",
+      "shop_domain": "fixture-kitchen.example",
+      "niche": "Cuisine",
+      "priority": "3 Normal",
+      "response": {
+        "id": "gen-dec-1792188796-29YaCZlH6kHkh3Vt9nIq",
+        "model": "typesafe/jev-1.14-20261014",
+        "provider": "TypeSafe",
+        "answers": {
+          "niche": {
+            "type": "choice",
+            "choice": "Cuisine",
+            "probabilities": {
+              "Animaux": 0,
+              "Auto/Moto": 0,
+              "Bébé/Maman": 0,
+              "Beauté/Femme": 0,
+              "Cuisine": 0.99,
+              "Fashion/Bijoux": 0,
+              "Homme": 0,
+              "Maison": 0.01,
+              "Santé": 0,
+              "Sport": 0,
+              "Autre": 0
+            },
+            "confidence": 0.99
+          },
+          "priority": {
+            "type": "choice",
+            "choice": "3 Normal",
+            "probabilities": {
+              "1 Urgent": 0,
+              "2 Important": 0.01,
+              "3 Normal": 0.97,
+              "4 Faible": 0.02,
+              "5 Lancé": 0
+            },
+            "confidence": 0.96
+          }
+        },
+        "usage": {
+          "input_tokens": 1057,
+          "output_tokens": 177,
+          "cost": 4.4394e-05
+        },
+        "requested_model": "typesafe/jev-1.14"
+      }
+    },
+    {
+      "kind": "synthetic_fixture",
+      "product": "Tapis de yoga antidérapant pour fitness",
+      "shop_domain": "fixture-sport.example",
+      "niche": "Sport",
+      "priority": "3 Normal",
+      "response": {
+        "id": "gen-dec-1792188796-RtdS9zIhmwfyeAmHc3dy",
+        "model": "typesafe/jev-1.14-20261014",
+        "provider": "TypeSafe",
+        "answers": {
+          "niche": {
+            "type": "choice",
+            "choice": "Sport",
+            "probabilities": {
+              "Animaux": 0,
+              "Auto/Moto": 0,
+              "Bébé/Maman": 0,
+              "Beauté/Femme": 0,
+              "Cuisine": 0,
+              "Fashion/Bijoux": 0,
+              "Homme": 0,
+              "Maison": 0,
+              "Santé": 0,
+              "Sport": 1,
+              "Autre": 0
+            },
+            "confidence": 1
+          },
+          "priority": {
+            "type": "choice",
+            "choice": "3 Normal",
+            "probabilities": {
+              "1 Urgent": 0.08,
+              "2 Important": 0.11,
+              "3 Normal": 0.8,
+              "4 Faible": 0.01,
+              "5 Lancé": 0
+            },
+            "confidence": 0.75
+          }
+        },
+        "usage": {
+          "input_tokens": 1060,
+          "output_tokens": 175,
+          "cost": 4.452e-05
+        },
+        "requested_model": "typesafe/jev-1.14"
+      }
+    },
+    {
+      "kind": "archived_real_candidate",
+      "product": "Pousse Croissance & Fortification",
+      "shop_domain": "luxeol.com",
+      "niche": "Beauté/Femme",
+      "priority": "3 Normal",
+      "response": {
+        "id": "gen-dec-1792188857-jIeGkdLSiF1FHvSRCBWc",
+        "model": "typesafe/jev-1.14-20261014",
+        "provider": "TypeSafe",
+        "answers": {
+          "niche": {
+            "type": "choice",
+            "choice": "Beauté/Femme",
+            "probabilities": {
+              "Animaux": 0,
+              "Auto/Moto": 0,
+              "Bébé/Maman": 0,
+              "Beauté/Femme": 0.99,
+              "Cuisine": 0,
+              "Fashion/Bijoux": 0,
+              "Homme": 0,
+              "Maison": 0,
+              "Santé": 0.01,
+              "Sport": 0,
+              "Autre": 0
+            },
+            "confidence": 0.99
+          },
+          "priority": {
+            "type": "choice",
+            "choice": "3 Normal",
+            "probabilities": {
+              "1 Urgent": 0.05,
+              "2 Important": 0.08,
+              "3 Normal": 0.84,
+              "4 Faible": 0.02,
+              "5 Lancé": 0.01
+            },
+            "confidence": 0.8
+          }
+        },
+        "usage": {
+          "input_tokens": 1409,
+          "output_tokens": 179,
+          "cost": 5.9178e-05
+        },
+        "requested_model": "typesafe/jev-1.14"
+      }
+    },
+    {
+      "kind": "archived_real_candidate",
+      "product": "DEVA LIGHT SPACER FUR DOUBLE - Polaire - Veste - Femme - Green Army-Fur",
+      "shop_domain": "k-way.fr",
+      "niche": "Fashion/Bijoux",
+      "priority": "3 Normal",
+      "response": {
+        "id": "gen-dec-1792188857-8QZZNkWxsnjmeltx8Qfi",
+        "model": "typesafe/jev-1.14-20261014",
+        "provider": "TypeSafe",
+        "answers": {
+          "niche": {
+            "type": "choice",
+            "choice": "Fashion/Bijoux",
+            "probabilities": {
+              "Animaux": 0,
+              "Auto/Moto": 0,
+              "Bébé/Maman": 0,
+              "Beauté/Femme": 0.02,
+              "Cuisine": 0,
+              "Fashion/Bijoux": 0.96,
+              "Homme": 0,
+              "Maison": 0,
+              "Santé": 0,
+              "Sport": 0.02,
+              "Autre": 0
+            },
+            "confidence": 0.96
+          },
+          "priority": {
+            "type": "choice",
+            "choice": "3 Normal",
+            "probabilities": {
+              "1 Urgent": 0.1,
+              "2 Important": 0.08,
+              "3 Normal": 0.63,
+              "4 Faible": 0.17,
+              "5 Lancé": 0.02
+            },
+            "confidence": 0.54
+          }
+        },
+        "usage": {
+          "input_tokens": 1249,
+          "output_tokens": 178,
+          "cost": 5.2458e-05
+        },
+        "requested_model": "typesafe/jev-1.14"
+      }
+    },
+    {
+      "kind": "archived_real_candidate",
+      "product": "Collier Graphique",
+      "shop_domain": "fr.apm.mc",
+      "niche": "Fashion/Bijoux",
+      "priority": "3 Normal",
+      "response": {
+        "id": "gen-dec-1792188857-6HTsonlMBhKBfnkRMXaj",
+        "model": "typesafe/jev-1.14-20261014",
+        "provider": "TypeSafe",
+        "answers": {
+          "niche": {
+            "type": "choice",
+            "choice": "Fashion/Bijoux",
+            "probabilities": {
+              "Animaux": 0,
+              "Auto/Moto": 0,
+              "Bébé/Maman": 0,
+              "Beauté/Femme": 0,
+              "Cuisine": 0,
+              "Fashion/Bijoux": 1,
+              "Homme": 0,
+              "Maison": 0,
+              "Santé": 0,
+              "Sport": 0,
+              "Autre": 0
+            },
+            "confidence": 1
+          },
+          "priority": {
+            "type": "choice",
+            "choice": "3 Normal",
+            "probabilities": {
+              "1 Urgent": 0.04,
+              "2 Important": 0.06,
+              "3 Normal": 0.86,
+              "4 Faible": 0.04,
+              "5 Lancé": 0
+            },
+            "confidence": 0.82
+          }
+        },
+        "usage": {
+          "input_tokens": 1233,
+          "output_tokens": 178,
+          "cost": 5.1786e-05
+        },
+        "requested_model": "typesafe/jev-1.14"
+      }
+    }
+  ]
+}
