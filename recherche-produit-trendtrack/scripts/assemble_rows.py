@@ -109,7 +109,11 @@ def assemble_rows(
         product_url = c.get("product_url") or c.get("landing_url") or ""
         main_cc = str((c.get("country_breakdown") or {}).get("main") or "").upper()
         country = c.get("country_fr") or c.get("country") or COUNTRY_FR.get(main_cc) or main_cc or "France"
+        # Niche: inferred by infer_niche_priority.py (OpenRouter, Sheet vocabulary);
+        # "Divers" only as a fallback when inference failed AND no niche was carried.
         niche = c.get("niche") or "Divers"
+        # Priority: inferred from the Sheet's own vocabulary (e.g. "1 Urgent", "2 Important")
+        priority = str(c.get("priority") or "").strip()
 
         e = enriched_data.get(domain, {})
         ads = list(e.get("ads") or [])
@@ -137,7 +141,8 @@ def assemble_rows(
         ads_col_val = str(min(live_ads, 20) if live_ads else min(len(ads), 20))
 
         # Build columns 0 to 10 (A to K)
-        # Note: Priority (col 6) and Score /100 (col 72) are left empty as requested
+        # Note: Priority (col 6) is the OpenRouter-inferred Sheet label; empty on inference failure.
+        # Score /100 (col 72) stays empty as requested.
         row = [
             "FALSE",                 # Col 0 (A): Checkbox
             title,                   # Col 1 (B): Nom du Produit
@@ -145,7 +150,7 @@ def assemble_rows(
             country,                 # Col 3 (D): Pays
             niche,                   # Col 4 (E): Niche
             ads_col_val,             # Col 5 (F): Ads
-            "",                      # Col 6 (G): Priorité (laissé vide)
+            priority,                # Col 6 (G): Priorité (inférée OpenRouter)
             "",                      # Col 7 (H): Kalodata / vide
             f"{cogs:.2f}€",          # Col 8 (I): COGS
             f"{price:.2f}€",         # Col 9 (J): Prix

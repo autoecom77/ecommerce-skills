@@ -14,14 +14,16 @@ Runs the entire deterministic ecommerce research pipeline end-to-end:
   Étape 6  : Écriture atomique dans Google Sheets (write_sheet.py)
   Étape 7  : Envoi de l'email récapitulatif (send_recap.py)
 
-Credit policy (SKILL.md « Règles Opérationnelles »): hard cap 1 200 TrendTrack credits
-per run, abort if the starting balance is < 300. Billing is ~1.5 credit per returned ad
-(~150 per 100-ad page), so the search gets --search-budget credits and the enrichment
-gets whatever is left under the cap.
+Credit policy (2026-10-16, user decision): NO per-run credit cap anymore. If items pass
+the filters, enrich them ALL until the end (the 2026-10-16 run left 64 shops un-enriched
+because of the old 1 200-credit cap). The search still takes --search-budget credits per
+run (default 850) as a search-depth knob, and the enrichment gets the REST OF THE BALANCE
+(until the account runs dry). The only remaining hard stop: abort if the starting balance
+is < 300. Billing is ~1.5 credit per returned ad (~150 per 100-ad page).
 
 Usage:
     python3 run_pipeline.py [--pages 5] [--dry-run] [--date YYYY-MM-DD]
-                            [--credit-cap 1200] [--search-budget 850] [--cogs-workers 4]
+                            [--search-budget 850] [--cogs-workers 4]
                             [--resume-from search|prices|cogs]
 
 --resume-from restarts a stopped/crashed run at that stage, reusing the earlier /tmp
@@ -59,10 +61,11 @@ SHEET_ID = "1dpjf3fYBPG8eXgsbRnpi3QLdHdPwQB40W86Yz3pVPEM"
 RUN_DIR = Path("/tmp/tt_run")
 RUN_DIR.mkdir(parents=True, exist_ok=True)
 
-RUN_CREDIT_CAP = 1200
+# 2026-10-16: the per-run credit CAP is REMOVED (user decision) — enrich every kept
+# shop until the end instead of stopping at an arbitrary budget. The search budget
+# remains a search-DEPTH knob. The only hard stop left is the low-balance guard.
 DEFAULT_SEARCH_BUDGET = 850
 MIN_START_CREDITS = 300
-MIN_ENRICH_BUDGET = 15  # one 8-ad shop query costs up to ~12 credits
 
 # cogs_image_search.py cascade worst case ≈ Apify image (~2.3 min) + AliExpress (~2.3 min)
 # + 1688 keyword (~1.8 min); its own internal timeouts should fire before this outer guard.
@@ -94,6 +97,9 @@ P: Dict[str, Path] = {
     "with_cogs": Path("/tmp/tt_candidates_with_cogs.json"),
     "cogs_stats": Path("/tmp/tt_cogs_stats.json"),
     "kept": Path("/tmp/tt_candidates_kept.json"),
+    "kept_meta": Path("/tmp/tt_candidates_kept_meta.json"),
+    "vocab": Path("/tmp/tt_vocab.json"),
+    "infer_stats": Path("/tmp/tt_infer_stats.json"),
     "enriched": Path("/tmp/tt_enriched.json"),
     "enrich_stats": Path("/tmp/tt_enrich_stats.json"),
     "rows": RUN_DIR / "rows.json",
@@ -293,10 +299,9 @@ def main() -> None:
     parser.add_argument("--date", default=datetime.now().strftime("%Y-%m-%d"), help="Run date (YYYY-MM-DD)")
     parser.add_argument("--pages", type=int, default=5, help="Max pages per search method (default 5)")
     parser.add_argument("--dry-run", action="store_true", help="Run without modifying Sheet or sending real email")
-    parser.add_argument("--credit-cap", type=int, default=RUN_CREDIT_CAP,
-                        help=f"Hard cap of TrendTrack credits for the whole run (default {RUN_CREDIT_CAP})")
     parser.add_argument("--search-budget", type=int, default=DEFAULT_SEARCH_BUDGET,
-                        help=f"Credits reserved for the ad search within the cap (default {DEFAULT_SEARCH_BUDGET})")
+                        help=f"Credits for the ad search (search-depth knob, default {DEFAULT_SEARCH_BUDGET}). "
+                             "The enrichment is no longer capped: every kept shop is enriched until the account balance runs out.")
     parser.add_argument("--cogs-workers", type=int, default=DEFAULT_COGS_WORKERS,
                         help=f"Parallel COGS searches (default {DEFAULT_COGS_WORKERS})")
     parser.add_argument("--resume-from", choices=["search", "prices", "cogs"], default="search",
@@ -324,13 +329,13 @@ def main() -> None:
     else:
         u0 = load_json(P["usage_start"], {})  # keep the original baseline: the recap must count the search
     rem_start = remaining_credits(u0)
-    log(f"[pipeline] TrendTrack balance at start: {rem_start} credits (run cap {args.credit_cap})")
+    log(f"[pipeline] TrendTrack balance at start: {rem_start} credits (search budget {args.search_budget})")
     if args.resume_from == "search" and 0 <= rem_start < MIN_START_CREDITS:
         raise SystemExit(
             f"[pipeline] ABORT: Low TrendTrack credits ({rem_start} < {MIN_START_CREDITS}). "
             f"Stopping run to protect balance."
         )
-    search_budget = max(0, min(args.search_budget, args.credit_cap))
+    search_budget = max(0, args.search_budget)
 
     if args.resume_from == "search":
         gapi_py = HERMES_HOME / "venvs/gws/bin/python"
@@ -418,35 +423,40 @@ def main() -> None:
     P["near_misses"].write_text(json.dumps(merged_nm, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # ---------------------------------------------------------
-    # Étape 4 : Enrichissement TrendTrack top ads (reste du budget)
+    # Étape 4 : Enrichissement TrendTrack top ads — SANS plafond
+    # (2026-10-16 : tous les shops retenus sont enrichis jusqu'au bout ;
+    #  enrich_api.py --max-credits 0 = illimité, seule la limite du compte arrête)
     # ---------------------------------------------------------
     kept: List[Dict[str, Any]] = load_json(P["kept"], [])
-    u_mid = check_and_save_usage(P["usage_mid"])
-    rem_mid = remaining_credits(u_mid)
-    qstats = load_json(P["query_stats"], {}) or {}
-    if rem_start >= 0 and rem_mid >= 0:
-        used_so_far = rem_start - rem_mid
-    else:
-        used_so_far = int(qstats.get("credits_spent") or 0)
-    enrich_budget = args.credit_cap - used_so_far
     if not kept:
         log("[pipeline] No candidate kept — enrichment skipped")
         P["enriched"].write_text("[]", encoding="utf-8")
-    elif enrich_budget < MIN_ENRICH_BUDGET:
-        log(f"[pipeline] Enrichment skipped: credit cap {args.credit_cap} reached ({used_so_far} used)")
-        P["enriched"].write_text("[]", encoding="utf-8")
-        P["enrich_stats"].write_text(json.dumps({"shops": len(kept), "enriched": 0, "errors": 0,
-                                                 "skipped_budget": len(kept), "credits_spent": 0,
-                                                 "budget": enrich_budget}), encoding="utf-8")
     else:
         ok = run_cmd([sys.executable, str(SCRIPT_DIR / "enrich_api.py"),
-                      "--candidates", str(P["kept"]), "--max-credits", str(enrich_budget),
+                      "--candidates", str(P["kept"]), "--max-credits", "0",
                       "--stats-out", str(P["enrich_stats"])],
-                     f"Enrichissement top ads (enrich_api.py, budget {enrich_budget} crédits)",
+                     "Enrichissement top ads (enrich_api.py, illimité)",
                      stdout_path=P["enriched"], fatal=False)
         if not ok or not isinstance(load_json(P["enriched"], None), list):
             log("[pipeline] Warning: enrichment failed, continuing with the search ads only")
             P["enriched"].write_text("[]", encoding="utf-8")
+
+    # ---------------------------------------------------------
+    # Étape 4bis : Inférence Niche + Priorité (OpenRouter, vocabulaire du Sheet)
+    # ---------------------------------------------------------
+    if kept:
+        infer_cmd = [sys.executable, str(SCRIPT_DIR / "infer_niche_priority.py"),
+                     "--candidates", str(P["kept"]), "--output", str(P["kept_meta"]),
+                     "--vocab-out", str(P["vocab"]), "--stats-out", str(P["infer_stats"])]
+        infer_ok = run_cmd(infer_cmd, "Inférence Niche & Priorité (infer_niche_priority.py, OpenRouter)",
+                           fatal=False)
+        if infer_ok and P["kept_meta"].exists():
+            kept = load_json(P["kept_meta"], kept) or kept
+            P["kept"].write_text(json.dumps(kept, indent=2, ensure_ascii=False), encoding="utf-8")
+        else:
+            log("[pipeline] Warning: niche/priority inference failed — continuing with empty columns")
+    else:
+        P["infer_stats"].write_text("{}", encoding="utf-8")
 
     # ---------------------------------------------------------
     # Étape 5 : Formatage des 75 colonnes (assemble_rows.py)
@@ -490,6 +500,7 @@ def main() -> None:
         "funnel": {k: v for k, v in funnel.items() if k not in ("near_misses", "enrich")},
         "cogs_stats": cogs_stats,
         "enrich_stats": load_json(P["enrich_stats"], {}),
+        "infer_stats": load_json(P["infer_stats"], {}),
         "near_misses": funnel.get("near_misses") or [],
         "top_products": [
             {
